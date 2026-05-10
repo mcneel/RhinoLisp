@@ -1,0 +1,183 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <Filter Include="Source Files">
+      <UniqueIdentifier>{4FC737F1-C7A5-4376-A066-2A32D752A2FF}</UniqueIdentifier>
+      <Extensions>cpp;c;cc;cxx;c++;cppm;ixx;def;odl;idl;hpj;bat;asm;asmx</Extensions>
+    </Filter>
+    <Filter Include="Header Files">
+      <UniqueIdentifier>{93995380-89BD-4b04-88EB-625FBE52EBFB}</UniqueIdentifier>
+      <Extensions>h;hh;hpp;hxx;h++;hm;inl;inc;ipp;xsd</Extensions>
+    </Filter>
+    <Filter Include="Resource Files">
+      <UniqueIdentifier>{67DA6AB6-F800-4c08-8B7A-83BB121AAD01}</UniqueIdentifier>
+      <Extensions>rc;ico;cur;bmp;dlg;rc2;rct;bin;rgs;gif;jpg;jpeg;jpe;resx;tiff;tif;png;wav;mfcribbon-ms</Extensions>
+    </Filter>
+    <Filter Include="XLISP-PLUS">
+      <UniqueIdentifier>{8B7C4FAA-9B4E-49A1-9F3E-2F0C8B5D5A11}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="RhinoLispApp.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="stdafx.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="RhinoLispPlugIn.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="cmdRhinoLisp.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="XLISP-PLUS\sources\xlbfun.c">
+      <Filter>XLISP-PLUS</Filter>
+    </ClCompile>
+    <ClCompile Include="XLISP-PLUS\sources\xlbignum.c">
+      <Filter>XLISP-PLUS</Filter>
+    </ClCompile>
+    <ClCompile Include="XLISP-PLUS\sources\xlcont.c">
+      <Filter>XLISP-PLUS</Filter>
+    </ClCompile>
+    <ClCompile Include="XLISP-PLUS\sources\xldbug.c">
+      <Filter>XLISP-PLUS</Filter>
+    </ClCompile>
+    <ClCompile Include="XLISP-PLUS\sources\xldmem.c">
+      <Filter>XLISP-PLUS</Filter>
+    </ClCompile>
+    <ClCompile Include="XLISP-PLUS\sources\xleval.c">
+      <Filter>XLISP-PLUS</Filter>
+    </ClCompile>
+    <ClCompile Include="XLISP-PLUS\sources\xlfio.c">
+      <Filter>XLISP-PLUS</Filter>
+    </ClCompile>
+    <ClCompile Include="XLISP-PLUS\sources\xlftab.c">
+      <Filter>XLISP-PLUS</Filter>
+    </ClCompile>
+    <ClCompile Include="XLISP-PLUS\sources\xlglob.c">
+      <Filter>XLISP-PLUS</Filter>
+    </ClCompile>
+    <ClCompile Include="XLISP-PLUS\sources\xlimage.c">
+      <Filter>XLISP-PLUS</Filter>
+    </ClCompile>
+    <ClCompile Include="XLISP-PLUS\sources\xlinit.c">
+      <Filter>XLISP-PLUS</Filter>
+    </ClCompile>
+    <ClCompile Include="XLISP-PLUS\sources\xlio.c">
+      <Filter>XLISP-PLUS</Filter>
+    </ClCompile>
+    <ClCompile Include="XLISP-PLUS\sources\xljump.c">
+      <Filter>XLISP-PLUS</Filter>
+    </ClCompile>
+    <ClCompile Include="XLISP-PLUS\sources\xllist.c">
+      <Filter>XLISP-PLUS</Filter>
+    </ClCompile>
+    <ClCompile Include="XLISP-PLUS\sources\xlmath.c">
+      <Filter>XLISP-PLUS</Filter>
+    </ClCompile>
+    <ClCompile Include="XLISP-PLUS\sources\xlmath2.c">
+      <Filter>XLISP-PLUS</Filter>
+    </ClCompile>
+    <ClCompile Include="XLISP-PLUS\sources\xlmath3.c">
+      <Filter>XLISP-PLUS</Filter>
+    </ClCompile>
+    <ClCompile Include="XLISP-PLUS\sources\xlobj.c">
+      <Filter>XLISP-PLUS</Filter>
+    </ClCompile>
+    <ClCompile Include="XLISP-PLUS\sources\xlpp.c">
+      <Filter>XLISP-PLUS</Filter>
+    </ClCompile>
+    <ClCompile Include="XLISP-PLUS\sources\xlprin.c">
+      <Filter>XLISP-PLUS</Filter>
+    </ClCompile>
+    <ClCompile Include="XLISP-PLUS\sources\xlread.c">
+      <Filter>XLISP-PLUS</Filter>
+    </ClCompile>
+    <ClCompile Include="XLISP-PLUS\sources\xlseq.c">
+      <Filter>XLISP-PLUS</Filter>
+    </ClCompile>
+    <ClCompile Include="XLISP-PLUS\sources\xlstr.c">
+      <Filter>XLISP-PLUS</Filter>
+    </ClCompile>
+    <ClCompile Include="XLISP-PLUS\sources\xlstruct.c">
+      <Filter>XLISP-PLUS</Filter>
+    </ClCompile>
+    <ClCompile Include="XLISP-PLUS\sources\xlsubr.c">
+      <Filter>XLISP-PLUS</Filter>
+    </ClCompile>
+    <ClCompile Include="XLISP-PLUS\sources\xlsym.c">
+      <Filter>XLISP-PLUS</Filter>
+    </ClCompile>
+    <ClCompile Include="XLISP-PLUS\sources\xlsys.c">
+      <Filter>XLISP-PLUS</Filter>
+    </ClCompile>
+    <ClCompile Include="rhino_sdk_glue.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="rhino_stuff.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="rhino_xlisp_driver.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="rhino_subrs.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="RhinoLispApp.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="stdafx.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="Resource.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="RhinoLispPlugIn.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="targetver.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="XLISP-PLUS\sources\xlisp.h">
+      <Filter>XLISP-PLUS</Filter>
+    </ClInclude>
+    <ClInclude Include="XLISP-PLUS\sources\xldmem.h">
+      <Filter>XLISP-PLUS</Filter>
+    </ClInclude>
+    <ClInclude Include="XLISP-PLUS\sources\xlftab.h">
+      <Filter>XLISP-PLUS</Filter>
+    </ClInclude>
+    <ClInclude Include="XLISP-PLUS\sources\xlglob.h">
+      <Filter>XLISP-PLUS</Filter>
+    </ClInclude>
+    <ClInclude Include="XLISP-PLUS\sources\osdefs.h">
+      <Filter>XLISP-PLUS</Filter>
+    </ClInclude>
+    <ClInclude Include="XLISP-PLUS\sources\osptrs.h">
+      <Filter>XLISP-PLUS</Filter>
+    </ClInclude>
+    <ClInclude Include="rhino_subrs.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="RhinoLisp.def">
+      <Filter>Source Files</Filter>
+    </None>
+    <None Include="res\RhinoLisp.rc2">
+      <Filter>Resource Files</Filter>
+    </None>
+  </ItemGroup>
+  <ItemGroup>
+    <ResourceCompile Include="RhinoLisp.rc">
+      <Filter>Resource Files</Filter>
+    </ResourceCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <Image Include="res\RhinoLisp.ico">
+      <Filter>Resource Files</Filter>
+    </Image>
+  </ItemGroup>
+</Project>
