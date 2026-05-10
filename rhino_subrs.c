@@ -203,6 +203,136 @@ LVAL subGETPOINT(void)
   return MakePointList(rx, ry, rz);
 }
 
+// ---------------------------------------------------------------------
+// (getreal [msg]) -> real-or-NIL
+//   msg : optional prompt string.
+// AutoLISP returns NIL when the user cancels with ESC. We mirror that
+// rather than aborting the script with an XLISP error.
+// ---------------------------------------------------------------------
+LVAL subGETREAL(void)
+{
+  const char* prompt = NULL;
+  char prompt_buf[256];
+  prompt_buf[0] = '\0';
+
+  while (moreargs())
+  {
+    LVAL a = xlgetarg();
+    if (stringp(a))
+    {
+      const char* s = (const char*)getstring(a);
+      int n;
+      for (n = 0; n < (int)sizeof(prompt_buf) - 1 && s[n]; ++n)
+        prompt_buf[n] = s[n];
+      prompt_buf[n] = '\0';
+      prompt = prompt_buf;
+    }
+    /* anything else: silently ignore (matches GETSTRING tolerance) */
+  }
+
+  double value = 0.0;
+  if (!helperGETREAL(prompt, &value))
+    return NIL;
+  return cvflonum((FLOTYPE)value);
+}
+
+// ---------------------------------------------------------------------
+// (strcat [s1 s2 ...]) -> string
+//
+// XLISP's CONCATENATE works on sequences in general but requires a
+// type tag as its first argument:  (concatenate 'string a b). AutoLISP
+// scripts spell it more concisely as (strcat a b ...), so we provide
+// a thin SUBR with that name.
+// ---------------------------------------------------------------------
+LVAL subSTRCAT(void)
+{
+  if (!moreargs())
+    return cvstring("");
+
+  // We need to walk the argument list twice (size, then copy). xlargv
+  // and xlargc are global lexer-style cursors; save/restore them so
+  // the second pass starts at the first arg again.
+  LVAL FAR *saveargv = xlargv;
+  int       saveargc = xlargc;
+
+  // First pass: validate types and accumulate total length.
+  unsigned total = 0;
+  while (moreargs())
+  {
+    LVAL a = xlgetarg();
+    if (!stringp(a))
+      xlerror("strcat: expected string", a);
+    total += getslength(a);
+  }
+
+  xlargv = saveargv;
+  xlargc = saveargc;
+
+  // Allocate first - newstring may trigger GC. After this point we
+  // make no more allocations, so writing into the buffer is safe.
+  LVAL val = newstring(total);
+  char FAR *dst = (char FAR*)getstring(val);
+
+  while (moreargs())
+  {
+    LVAL a = xlgetarg();
+    unsigned len = getslength(a);
+    if (len) MEMCPY(dst, getstring(a), len);
+    dst += len;
+  }
+  *dst = '\0';
+  return val;
+}
+
+// ---------------------------------------------------------------------
+// (rtos number [mode [precision]]) -> string
+//   mode      : 1=scientific, 2=decimal (default), 3=engineering,
+//               4=architectural, 5=fractional. Modes 3-5 are AutoCAD
+//               imperial conventions; we fall back to decimal for them.
+//   precision : digits after the decimal point. Default 4.
+// ---------------------------------------------------------------------
+LVAL subRTOS(void)
+{
+  double n         = ArgAsDouble();
+  int    mode      = 2;
+  int    precision = 4;
+
+  if (moreargs())
+  {
+    LVAL m = xlgetarg();
+    if (fixp(m))        mode = (int)getfixnum(m);
+    else if (floatp(m)) mode = (int)getflonum(m);
+    else xlerror("rtos: mode must be a number", m);
+  }
+  if (moreargs())
+  {
+    LVAL p = xlgetarg();
+    if (fixp(p))        precision = (int)getfixnum(p);
+    else if (floatp(p)) precision = (int)getflonum(p);
+    else xlerror("rtos: precision must be a number", p);
+  }
+  xllastarg();
+
+  if (precision < 0)  precision = 0;
+  if (precision > 16) precision = 16;
+
+  char fmt[16];
+  char buf[64];
+
+  if (mode == 1)
+  {
+    /* Scientific: e.g. 1.2345E+02 */
+    snprintf(fmt, sizeof(fmt), "%%.%dE", precision);
+  }
+  else
+  {
+    /* Decimal (and fall-through for unsupported imperial modes 3-5). */
+    snprintf(fmt, sizeof(fmt), "%%.%df", precision);
+  }
+  snprintf(buf, sizeof(buf), fmt, n);
+  return cvstring(buf);
+}
+
 LVAL subPOLAR(void)
 {
   LVAL pt_lv;
@@ -651,10 +781,13 @@ void RegisterCustomLispFunctions(void)
   xlsubr("DEFUN",     FSUBR, fsubDEFUN,   0);
   xlsubr("GETDIST",   SUBR,  subGETDIST,  0);
   xlsubr("GETPOINT",  SUBR,  subGETPOINT, 0);
+  xlsubr("GETREAL",   SUBR,  subGETREAL,  0);
   xlsubr("GETSTRING", SUBR,  subGETSTRING,0);
   xlsubr("GETVAR",    SUBR,  subGETVAR,   0);
   xlsubr("POW",       SUBR,  subPOW,      0);
   xlsubr("POLAR",     SUBR,  subPOLAR,    0);
   xlsubr("PRINC",     SUBR,  subPRINC,    0);
+  xlsubr("RTOS",      SUBR,  subRTOS,     0);
   xlsubr("SETVAR",    SUBR,  subSETVAR,   0);
+  xlsubr("STRCAT",    SUBR,  subSTRCAT,   0);
 }

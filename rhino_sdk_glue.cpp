@@ -37,6 +37,27 @@ extern "C" void RhinoAppPrint(const char* msg)
     RhinoApp().Print(L"\n");
 }
 
+extern "C" int helperGETREAL(const char* prompt, double* value)
+{
+  if (nullptr == value)
+    return FALSE;
+  *value = 0.0;
+
+  CRhinoGetNumber gn;
+  if (prompt && *prompt)
+  {
+    ON_wString wPrompt = prompt;
+    wPrompt.TrimLeftAndRight();
+    gn.SetCommandPrompt(wPrompt);
+  }
+
+  if (gn.GetNumber() != CRhinoGet::number)
+    return FALSE;
+
+  *value = gn.Number();
+  return TRUE;
+}
+
 extern "C" int helperGETDIST(const char* prompt, int has_base, double bx, double by, double bz, double* distance)
 {
   if (nullptr == distance)
@@ -46,11 +67,12 @@ extern "C" int helperGETDIST(const char* prompt, int has_base, double bx, double
   if (prompt && *prompt)
   {
     ON_wString wPrompt = prompt;
-    wPrompt.RemoveWhiteSpace();
+    wPrompt.TrimLeftAndRight();
     gd.SetCommandPrompt(wPrompt);
   }
 
-  if (has_base) {
+  if (has_base)
+  {
     ON_3dPoint base(bx, by, bz);
     gd.SetBasePoint(base);
     // Drawing a rubber-band line is the AutoLISP-default UX.
@@ -80,11 +102,10 @@ extern "C" int helperGETPOINT(const char* prompt,
   *out_z = 0.0;
 
   CRhinoGetPoint gp;
-
   if (prompt && *prompt)
   {
     ON_wString wPrompt = prompt;
-    wPrompt.RemoveWhiteSpace();
+    wPrompt.TrimLeftAndRight();
     gp.SetCommandPrompt(wPrompt);
   }
 
@@ -264,21 +285,22 @@ int rhino_glue_add_line(double x1, double y1, double z1,
 extern "C" void helperALERT(const char* msg)
 {
   ON_wString alert = msg;
+  alert.TrimLeftAndRight();
   RhinoMessageBox(alert.Array(), L"Alert", MB_OK | MB_ICONINFORMATION);
 }
 
 extern "C" int helperGETSTRING(const char* prompt, int allow_spaces, char* out, int out_cap)
 {
   if (!out || out_cap <= 0)
-    return 0;
+    return FALSE;
   out[0] = '\0';
 
   CRhinoGetString gs;
-  if (prompt && *prompt)
+  ON_wString commandPrompt = prompt;
+  commandPrompt.TrimLeftAndRight();
+  if (commandPrompt.IsNotEmpty())
   {
-    ON_String  aPrompt(prompt);
-    ON_wString wPrompt(aPrompt);
-    gs.SetCommandPrompt(wPrompt);
+    gs.SetCommandPrompt(commandPrompt.Array());
   }
 
   if (allow_spaces)
@@ -287,12 +309,12 @@ extern "C" int helperGETSTRING(const char* prompt, int allow_spaces, char* out, 
     gs.GetString();
 
   if (gs.CommandResult() != CRhinoCommand::success)
-    return 0;
+    return FALSE;
 
   ON_String aResult = gs.String();
   int n = aResult.Length();
   if (n >= out_cap) n = out_cap - 1;
-  if (n > 0) memcpy(out, static_cast<const char*>(aResult), n);
+  if (n > 0) memcpy(out, aResult.Array(), n);
   out[n] = '\0';
-  return 1;
+  return TRUE;
 }

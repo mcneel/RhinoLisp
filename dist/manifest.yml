@@ -1,0 +1,8 @@
+name: RhinoLisp
+version: 2026.5.9.1268
+authors:
+  - Steve Baer
+description: >
+  RhinoLisp aims to be a LISP interpreter for Rhino
+url: "https://github.com/mcneel/RhinoLisp"
+ 

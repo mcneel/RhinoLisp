@@ -70,3 +70,5 @@ Testing/
 .cache/
 
 .vs/
+dist/*.rhp
+dist/*.yak

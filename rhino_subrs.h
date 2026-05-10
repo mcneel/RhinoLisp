@@ -12,6 +12,7 @@ extern "C" {
     double* distance);
   int helperGETPOINT(const char* prompt, int has_base, double bx, double by, double bz,
     double* out_x, double* out_y, double* out_z);
+  int helperGETREAL(const char* prompt, double* value);
   int helperGETSTRING(const char* prompt, int allow_spaces, char* out, int out_cap);
   void helperALERT(const char* msg);
 

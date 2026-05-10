@@ -1,0 +1,6 @@
+(defun c:sumarea ()
+  (setq a1 (getreal "\nEnter first area: "))
+  (setq a2 (getreal "\nEnter second area: "))
+  (alert (strcat "The total area is: " (rtos (+ a1 a2))))
+  (princ)
+)
