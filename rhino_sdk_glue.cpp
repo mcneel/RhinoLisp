@@ -58,6 +58,27 @@ extern "C" int helperGETREAL(const char* prompt, double* value)
   return TRUE;
 }
 
+extern "C" int helperGETINT(const char* prompt, int* value)
+{
+  if (nullptr == value)
+    return FALSE;
+  *value = 0;
+
+  CRhinoGetInteger gi;
+  if (prompt && *prompt)
+  {
+    ON_wString wPrompt = prompt;
+    wPrompt.TrimLeftAndRight();
+    gi.SetCommandPrompt(wPrompt);
+  }
+
+  if (gi.GetInteger() != CRhinoGet::number)
+    return FALSE;
+
+  *value = gi.Number();
+  return TRUE;
+}
+
 extern "C" int helperGETDIST(const char* prompt, int has_base, double bx, double by, double bz, double* distance)
 {
   if (nullptr == distance)

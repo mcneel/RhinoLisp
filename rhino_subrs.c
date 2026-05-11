@@ -204,6 +204,38 @@ LVAL subGETPOINT(void)
 }
 
 // ---------------------------------------------------------------------
+// (getint [msg]) -> integer-or-NIL
+//   msg : optional prompt string.
+// Same shape as GETREAL but returns a fixnum. Cancel -> NIL.
+// ---------------------------------------------------------------------
+LVAL subGETINT(void)
+{
+  const char* prompt = NULL;
+  char prompt_buf[256];
+  prompt_buf[0] = '\0';
+
+  while (moreargs())
+  {
+    LVAL a = xlgetarg();
+    if (stringp(a))
+    {
+      const char* s = (const char*)getstring(a);
+      int n;
+      for (n = 0; n < (int)sizeof(prompt_buf) - 1 && s[n]; ++n)
+        prompt_buf[n] = s[n];
+      prompt_buf[n] = '\0';
+      prompt = prompt_buf;
+    }
+    /* anything else: silently ignore (matches GETSTRING tolerance) */
+  }
+
+  int value = 0;
+  if (!helperGETINT(prompt, &value))
+    return NIL;
+  return cvfixnum((FIXTYPE)value);
+}
+
+// ---------------------------------------------------------------------
 // (getreal [msg]) -> real-or-NIL
 //   msg : optional prompt string.
 // AutoLISP returns NIL when the user cancels with ESC. We mirror that
@@ -358,6 +390,51 @@ LVAL subPOW(void)
   double exponent = ArgAsDouble();
   xllastarg();
   return cvflonum((FLOTYPE)pow(base, exponent));
+}
+
+// ---------------------------------------------------------------------
+// (boole func int1 int2 ...) -> integer
+//
+// AutoLISP's general bitwise primitive. `func` is a 4-bit integer that
+// encodes a truth table over the two input bits. For each bit position
+// of the operands, bit k of `func` (k=0..3) selects the result when
+// the inputs match the pattern:
+//
+//   k=0: a=1, b=1   ->  &
+//   k=1: a=1, b=0   ->  a & ~b
+//   k=2: a=0, b=1   ->  ~a & b
+//   k=3: a=0, b=0   ->  ~a & ~b
+//
+// So func=1 is AND, func=6 (0110) is XOR, func=7 (0111) is OR, func=8
+// is NOR, func=14 is NAND, func=0 is clear-all, func=15 is set-all.
+// Additional operands are folded left-to-right (boole op (boole op a b) c).
+// ---------------------------------------------------------------------
+LVAL subBOOLE(void)
+{
+  LVAL op_arg = xlgafixnum();
+  long op = (long)getfixnum(op_arg);
+  op &= 0x0F;  /* truth-table is 4 bits; mask off junk */
+
+  if (!moreargs())
+    xlfail("BOOLE: needs at least one integer operand");
+
+  LVAL first = xlgafixnum();
+  long acc = (long)getfixnum(first);
+
+  while (moreargs())
+  {
+    LVAL b_arg = xlgafixnum();
+    long b = (long)getfixnum(b_arg);
+
+    long result = 0;
+    if (op & 1) result |= (acc & b);
+    if (op & 2) result |= (acc & ~b);
+    if (op & 4) result |= (~acc & b);
+    if (op & 8) result |= (~acc & ~b);
+    acc = result;
+  }
+
+  return cvfixnum((FIXTYPE)acc);
 }
 
 /* --------------------------------------------------------------------- */
@@ -725,6 +802,55 @@ LVAL fsubDEFUN(void)
 }
 
 // ---------------------------------------------------------------------
+// (while test body...) - AutoLISP loop construct.
+//
+// XLISP-PLUS ships with LOOP (iterate forever, exit via RETURN) and a
+// number of DO variants, but no WHILE. Many AutoLISP scripts spell
+// their loops as (while T ...) or (while (setq x ...) ...), so we add
+// a thin FSUBR with the canonical semantics:
+//   - Evaluate `test`.
+//   - If non-NIL, evaluate each body form in order.
+//   - Repeat. Return NIL when test goes NIL (also our return value if
+//     the loop never runs).
+// ---------------------------------------------------------------------
+LVAL fsubWHILE(void)
+{
+  if (xlargc < 1) xlfail("WHILE: missing test form");
+
+  LVAL test_form = xlargv[0];
+  /* Snapshot the body forms - everything after the test. We re-walk
+     this slice each iteration. */
+  LVAL FAR *body_argv = xlargv + 1;
+  int       body_argc = xlargc - 1;
+
+  LVAL val = NIL;
+
+  while (1)
+  {
+    LVAL test_val = xleval(test_form);
+    if (null(test_val))
+      break;
+
+    /* Re-point xlargv/xlargc at the body so nextarg()/moreargs()
+       walk the body forms cleanly inside this iteration. */
+    xlargv = body_argv;
+    xlargc = body_argc;
+    while (moreargs())
+      val = xleval(nextarg());
+
+    /* Allow Ctrl+Break / OS interrupts to escape an infinite loop -
+       same hook XLISP's LOOP uses. Without this, (while T ...) is
+       genuinely uninterruptible. */
+    if (--xlsample <= 0) {
+      xlsample = SAMPLE;
+      oscheck();
+    }
+  }
+
+  return val;
+}
+
+// ---------------------------------------------------------------------
 // (getstring [cr] [prompt]) -> string-or-NIL
 //   cr     : optional. T (or any non-nil) means "accept whitespace".
 //   prompt : optional string.
@@ -777,9 +903,11 @@ void RegisterCustomLispFunctions(void)
 {
   xlsubr("=",         SUBR,  subEQUAL,    0);
   xlsubr("ALERT",     SUBR,  subALERT,    0);
+  xlsubr("BOOLE",     SUBR,  subBOOLE,    0);
   xlsubr("COMMAND",   FSUBR, fsubCOMMAND, 0);
   xlsubr("DEFUN",     FSUBR, fsubDEFUN,   0);
   xlsubr("GETDIST",   SUBR,  subGETDIST,  0);
+  xlsubr("GETINT",    SUBR,  subGETINT,   0);
   xlsubr("GETPOINT",  SUBR,  subGETPOINT, 0);
   xlsubr("GETREAL",   SUBR,  subGETREAL,  0);
   xlsubr("GETSTRING", SUBR,  subGETSTRING,0);
@@ -790,4 +918,5 @@ void RegisterCustomLispFunctions(void)
   xlsubr("RTOS",      SUBR,  subRTOS,     0);
   xlsubr("SETVAR",    SUBR,  subSETVAR,   0);
   xlsubr("STRCAT",    SUBR,  subSTRCAT,   0);
+  xlsubr("WHILE",     FSUBR, fsubWHILE,   0);
 }

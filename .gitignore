@@ -72,3 +72,4 @@ Testing/
 .vs/
 dist/*.rhp
 dist/*.yak
+private_tests/
