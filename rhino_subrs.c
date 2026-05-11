@@ -20,8 +20,13 @@
 
 #include <math.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include "XLISP-PLUS/sources/xlisp.h"
 #include "rhino_subrs.h"
+
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
 
 
 static double ArgAsDouble()
@@ -35,7 +40,8 @@ static double ArgAsDouble()
   return 0.0; // never reached
 }
 
-// Pull (x y z) out of a 3-element list of numbers; 1 on success
+// Pull (x y [z]) out of a list of numbers; 1 on success.
+// AutoLISP point lists may be 2D - z defaults to 0 when omitted.
 static int ParsePointList(LVAL lst, double* x, double* y, double* z)
 {
   if (NULL == x || NULL == y || NULL == z)
@@ -56,13 +62,15 @@ static int ParsePointList(LVAL lst, double* x, double* y, double* z)
   else if (floatp(e)) *y = (double)getflonum(e);
   else return FALSE;
 
+  /* Z is optional. (x y) is a valid AutoLISP point, z defaults to 0. */
+  *z = 0.0;
   lst = cdr(lst);
-  if (!consp(lst)) return FALSE;
-  e = car(lst);
-  if (fixp(e))        *z = (double)getfixnum(e);
-  else if (floatp(e)) *z = (double)getflonum(e);
-  else return FALSE;
-
+  if (consp(lst)) {
+    e = car(lst);
+    if (fixp(e))        *z = (double)getfixnum(e);
+    else if (floatp(e)) *z = (double)getflonum(e);
+    else return FALSE;
+  }
   return TRUE;
 }
 
@@ -523,6 +531,249 @@ LVAL subRTOS(void)
   return cvstring(buf);
 }
 
+/* =====================================================================
+ * AutoLISP spelling aliases for stock XLISP functionality.
+ *
+ * These functions exist in XLISP-PLUS under different names (truncate,
+ * char-code, subseq, string-upcase, ...) or as small compositions of
+ * primitives. We wrap them with their AutoLISP spellings so scripts
+ * can call them as written.
+ * ===================================================================== */
+
+/* (fix n) - truncate a number toward zero. AutoLISP returns a single
+ * value; XLISP's TRUNCATE is multiple-value-returning, so we just
+ * synthesize the integer ourselves. */
+LVAL subFIX(void)
+{
+  LVAL a = xlgetarg();
+  xllastarg();
+  if (fixp(a))   return a;
+  if (floatp(a)) return cvfixnum((FIXTYPE)getflonum(a));
+  xlerror("fix: expected a number", a);
+  return NIL;
+}
+
+/* (ascii "X") -> integer character code of the first byte. NIL if the
+ * string is empty. */
+LVAL subASCII(void)
+{
+  LVAL s = xlgastring();
+  xllastarg();
+  const char* p = (const char*)getstring(s);
+  if (p[0] == '\0') return NIL;
+  return cvfixnum((FIXTYPE)(unsigned char)p[0]);
+}
+
+/* (chr 65) -> "A". One-byte character; for codes outside 0..255 we
+ * mask down to the low byte (matches AutoLISP's behavior). */
+LVAL subCHR(void)
+{
+  LVAL a = xlgafixnum();
+  xllastarg();
+  char buf[2];
+  buf[0] = (char)(((long)getfixnum(a)) & 0xFF);
+  buf[1] = '\0';
+  return cvstring(buf);
+}
+
+/* (strlen [s1 s2 ...]) -> total character count across all string args.
+ * (strlen) is 0; AutoLISP allows zero or more args. */
+LVAL subSTRLEN(void)
+{
+  long total = 0;
+  while (moreargs())
+  {
+    LVAL s = xlgastring();
+    total += (long)getslength(s);
+  }
+  return cvfixnum((FIXTYPE)total);
+}
+
+/* (strcase str [downcase-p]) -> upper-cased copy; lower-cased when the
+ * optional 2nd arg is non-nil. ASCII-only (matches AutoLISP). */
+LVAL subSTRCASE(void)
+{
+  LVAL s = xlgastring();
+  int down = 0;
+  if (moreargs())
+  {
+    LVAL flag = xlgetarg();
+    if (!null(flag)) down = 1;
+  }
+  xllastarg();
+
+  unsigned len = getslength(s);
+  LVAL result = newstring(len);
+  char FAR* dst = (char FAR*)getstring(result);
+  const char* src = (const char*)getstring(s);
+  for (unsigned i = 0; i < len; i++)
+  {
+    char c = src[i];
+    if (down) { if (c >= 'A' && c <= 'Z') c = (char)(c + 32); }
+    else      { if (c >= 'a' && c <= 'z') c = (char)(c - 32); }
+    dst[i] = c;
+  }
+  dst[len] = '\0';
+  return result;
+}
+
+/* (substr str start [length]) -> substring.
+ * AutoLISP indexing is 1-based; we translate to XLISP's 0-based slice.
+ * Out-of-range start returns "". Omitted length means "to end of str". */
+LVAL subSUBSTR(void)
+{
+  LVAL s     = xlgastring();
+  LVAL start = xlgafixnum();
+  long count = -1;
+  if (moreargs())
+  {
+    LVAL n = xlgafixnum();
+    count = (long)getfixnum(n);
+  }
+  xllastarg();
+
+  long start1 = (long)getfixnum(start);
+  if (start1 < 1) start1 = 1;
+  long start0 = start1 - 1;
+
+  unsigned slen = getslength(s);
+  if ((unsigned long)start0 >= slen) return cvstring("");
+
+  long available = (long)slen - start0;
+  if (count < 0 || count > available) count = available;
+  if (count < 0) count = 0;
+
+  LVAL result = newstring((unsigned)count);
+  char FAR* dst = (char FAR*)getstring(result);
+  const char* src = (const char*)getstring(s) + start0;
+  for (long i = 0; i < count; i++) dst[i] = src[i];
+  dst[count] = '\0';
+  return result;
+}
+
+/* (atoi "42") -> 42. Unparseable strings produce 0 (AutoLISP semantics). */
+LVAL subATOI(void)
+{
+  LVAL s = xlgastring();
+  xllastarg();
+  const char* p = (const char*)getstring(s);
+  long n = strtol(p, NULL, 10);
+  return cvfixnum((FIXTYPE)n);
+}
+
+/* (atof "3.14") -> 3.14. Unparseable -> 0.0. */
+LVAL subATOF(void)
+{
+  LVAL s = xlgastring();
+  xllastarg();
+  const char* p = (const char*)getstring(s);
+  double d = strtod(p, NULL);
+  return cvflonum((FLOTYPE)d);
+}
+
+/* (itoa 42) -> "42". Integer only - flonums should go through rtos. */
+LVAL subITOA(void)
+{
+  LVAL a = xlgafixnum();
+  xllastarg();
+  char buf[32];
+  snprintf(buf, sizeof(buf), "%ld", (long)getfixnum(a));
+  return cvstring(buf);
+}
+
+/* =====================================================================
+ * Pure-math AutoLISP primitives. No SDK calls, no state.
+ * ===================================================================== */
+
+/* (distance p1 p2) -> flonum
+ * Full 3D Euclidean distance. 2D point lists are accepted on either side
+ * (z defaults to 0), matching AutoLISP. */
+LVAL subDISTANCE(void)
+{
+  LVAL p1_arg = xlgetarg();
+  LVAL p2_arg = xlgetarg();
+  xllastarg();
+
+  double x1, y1, z1, x2, y2, z2;
+  if (!ParsePointList(p1_arg, &x1, &y1, &z1))
+    xlerror("distance: first arg must be a point", p1_arg);
+  if (!ParsePointList(p2_arg, &x2, &y2, &z2))
+    xlerror("distance: second arg must be a point", p2_arg);
+
+  double dx = x2 - x1, dy = y2 - y1, dz = z2 - z1;
+  return cvflonum((FLOTYPE)sqrt(dx * dx + dy * dy + dz * dz));
+}
+
+/* (angle p1 p2) -> flonum (radians in [0, 2*pi))
+ * AutoLISP convention is XY-plane angle from p1 to p2 - the z component
+ * is ignored. Result is normalized to [0, 2*pi) for compatibility with
+ * scripts that expect non-negative angles. */
+LVAL subANGLE(void)
+{
+  LVAL p1_arg = xlgetarg();
+  LVAL p2_arg = xlgetarg();
+  xllastarg();
+
+  double x1, y1, z1, x2, y2, z2;
+  if (!ParsePointList(p1_arg, &x1, &y1, &z1))
+    xlerror("angle: first arg must be a point", p1_arg);
+  if (!ParsePointList(p2_arg, &x2, &y2, &z2))
+    xlerror("angle: second arg must be a point", p2_arg);
+
+  double a = atan2(y2 - y1, x2 - x1);
+  if (a < 0.0) a += 2.0 * M_PI;
+  return cvflonum((FLOTYPE)a);
+}
+
+/* (inters p1 p2 p3 p4 [bounded]) -> point or NIL
+ *
+ * Computes the intersection of two lines in the XY plane.
+ *   - The line P1-P2 and the line P3-P4.
+ *   - When `bounded` is omitted or non-nil (default), both must be
+ *     bounded segments; the intersection has to fall inside both.
+ *   - When `bounded` is nil, the lines are treated as infinite.
+ *
+ * Returns the intersection point with z linearly interpolated along the
+ * first line. NIL if the lines are parallel, or (in bounded mode) if
+ * the crossing point falls outside either segment.
+ *
+ * This is a 2D-only implementation - matches what nearly all AutoLISP
+ * scripts assume in practice. True 3D skew-line "closest approach"
+ * is a separate, more involved exercise.
+ */
+LVAL subINTERS(void)
+{
+  LVAL p1_arg = xlgetarg();
+  LVAL p2_arg = xlgetarg();
+  LVAL p3_arg = xlgetarg();
+  LVAL p4_arg = xlgetarg();
+
+  int bounded = 1;
+  if (moreargs())
+  {
+    LVAL flag = xlgetarg();
+    if (null(flag)) bounded = 0;
+  }
+  xllastarg();
+
+  double pts[12];
+  if (!ParsePointList(p1_arg, pts, pts+1, pts+2))
+    xlerror("inters: arg 1 must be a point", p1_arg);
+  if (!ParsePointList(p2_arg, pts+3, pts+4, pts+5))
+    xlerror("inters: arg 2 must be a point", p2_arg);
+  if (!ParsePointList(p3_arg, pts+6, pts+7, pts+8))
+    xlerror("inters: arg 3 must be a point", p3_arg);
+  if (!ParsePointList(p4_arg, pts+9, pts+10, pts+11))
+    xlerror("inters: arg 4 must be a point", p4_arg);
+
+  double x=0, y=0, z=0;
+  int rc = helperIntersectLineLine(pts, bounded, &x, &y, &z);
+  if (0 == rc)
+    return NIL;
+
+  return MakePointList(x, y, z);
+}
+
 LVAL subPOLAR(void)
 {
   LVAL pt_lv;
@@ -656,36 +907,98 @@ static int EqualInsensitive(const char* a, const char* b)
   return *a == 0 && *b == 0;
 }
 
+/* AutoLISP accepts either spelling for a system-variable name:
+ *    (getvar "CLAYER")    ;; string literal
+ *    (getvar 'CLAYER)     ;; quoted symbol
+ * Strict XLISP-PLUS evaluates the quoted form to the symbol CLAYER,
+ * which isn't a string. This helper accepts both: returns the symbol's
+ * print-name when given a symbol, the raw string when given a string,
+ * and errors out cleanly on anything else. */
+static const char* SystemVarName(LVAL arg)
+{
+  if (stringp(arg))
+    return (const char*)getstring(arg);
+  if (symbolp(arg))
+    return (const char*)getstring(getpname(arg));
+  xlerror("system variable name must be a string or symbol", arg);
+  return NULL; /* unreachable - xlerror longjmps */
+}
+
 LVAL subGETVAR()
 {
-  LVAL nm = xlgastring();
+  LVAL nm = xlgetarg();
   xllastarg();
   {
-    const char* name = (const char*)getstring(nm);
+    const char* name = SystemVarName(nm);
+
     if (EqualInsensitive(name, "CLAYER")) {
       char buf[256];
       if (rhino_glue_getvar_clayer(buf, (int)sizeof(buf)))
         return cvstring(buf);
       return NIL;
     }
+
+    if (EqualInsensitive(name, "OSMODE")) {
+      int v = 0;
+      if (helperGetOSnapMode(&v))
+        return cvfixnum((FIXTYPE)v);
+      return NIL;
+    }
+
+    if (EqualInsensitive(name, "CMDECHO")) {
+      int v = 1;
+      if (helpGetEcho(&v))
+        return cvfixnum((FIXTYPE)v);
+      return NIL;
+    }
+
     xlerror("getvar: unsupported system variable", nm);
     return NIL;
   }
 }
 
+/* Coerce an LVAL to int for setvar of an integer-valued variable.
+   AutoLISP is forgiving: floats get truncated, integers pass through.
+   Anything else errors with a variable-named message. */
+static int SetvarIntArg(LVAL val, const char* var_name)
+{
+  if (fixp(val))   return (int)getfixnum(val);
+  if (floatp(val)) return (int)getflonum(val);
+  /* xlerror needs a single message argument; embed the var name. */
+  if (EqualInsensitive(var_name, "OSMODE"))
+    xlerror("setvar OSMODE: value must be an integer", val);
+  else
+    xlerror("setvar CMDECHO: value must be an integer", val);
+  return 0; /* unreachable */
+}
+
 LVAL subSETVAR()
 {
-  LVAL nm = xlgastring();
+  LVAL nm = xlgetarg();
   LVAL val = xlgetarg();
   xllastarg();
   {
-    const char* name = (const char*)getstring(nm);
+    const char* name = SystemVarName(nm);
+
     if (EqualInsensitive(name, "CLAYER")) {
       if (!stringp(val))
         xlerror("setvar CLAYER: value must be a string", val);
       (void)rhino_glue_setvar_clayer((const char*)getstring(val));
       return val;
     }
+
+    if (EqualInsensitive(name, "OSMODE")) {
+      int v = SetvarIntArg(val, "OSMODE");
+      (void)helperSetOSnapMode(v);
+      return val;
+    }
+
+    if (EqualInsensitive(name, "CMDECHO")) {
+      int v = SetvarIntArg(val, "CMDECHO");
+      (void)helperSetEcho(v);
+      return val;
+    }
+
     xlerror("setvar: unsupported system variable", nm);
     return NIL;
   }
@@ -911,6 +1224,27 @@ LVAL subPRINC(void)
 }
 
 // ---------------------------------------------------------------------
+// (prompt msg) - write a message to the command line, return NIL.
+//
+// Behaves like princ on a single string argument: no escaping of the
+// string's quotes, no trailing newline. AutoLISP scripts conventionally
+// embed "\n" at the start of the message themselves (you'll see
+// (prompt "\nSelect object: ") throughout the corpus), so we don't
+// auto-newline either.
+//
+// We route output through xlprint to the same stream princ uses, so the
+// text flows into the shared XLISP output buffer that cmdRhinoLisp.cpp
+// flushes to Rhino's command line at the end of the script run.
+// ---------------------------------------------------------------------
+LVAL subPROMPT(void)
+{
+  LVAL s = xlgastring();
+  xllastarg();
+  xlprint(getvalue(s_stdout), s, FALSE);
+  return NIL;
+}
+
+// ---------------------------------------------------------------------
 // AutoLISP-tolerant DEFUN.
 //
 // AutoLISP allows local-variable declarations in the parameter list
@@ -1053,22 +1387,35 @@ void RegisterCustomLispFunctions(void)
 {
   xlsubr("=",         SUBR,  subEQUAL,    0);
   xlsubr("ALERT",     SUBR,  subALERT,    0);
+  xlsubr("ANGLE",     SUBR,  subANGLE,    0);
+  xlsubr("ASCII",     SUBR,  subASCII,    0);
+  xlsubr("ATOF",      SUBR,  subATOF,     0);
+  xlsubr("ATOI",      SUBR,  subATOI,     0);
   xlsubr("BOOLE",     SUBR,  subBOOLE,    0);
+  xlsubr("CHR",       SUBR,  subCHR,      0);
   xlsubr("COMMAND",   FSUBR, fsubCOMMAND, 0);
   xlsubr("DEFUN",     FSUBR, fsubDEFUN,   0);
+  xlsubr("DISTANCE",  SUBR,  subDISTANCE, 0);
   xlsubr("ENTGET",    SUBR,  subENTGET,   0);
   xlsubr("ENTSEL",    SUBR,  subENTSEL,   0);
+  xlsubr("FIX",       SUBR,  subFIX,      0);
   xlsubr("GETDIST",   SUBR,  subGETDIST,  0);
   xlsubr("GETINT",    SUBR,  subGETINT,   0);
   xlsubr("GETPOINT",  SUBR,  subGETPOINT, 0);
   xlsubr("GETREAL",   SUBR,  subGETREAL,  0);
   xlsubr("GETSTRING", SUBR,  subGETSTRING,0);
   xlsubr("GETVAR",    SUBR,  subGETVAR,   0);
+  xlsubr("INTERS",    SUBR,  subINTERS,   0);
+  xlsubr("ITOA",      SUBR,  subITOA,     0);
   xlsubr("POW",       SUBR,  subPOW,      0);
   xlsubr("POLAR",     SUBR,  subPOLAR,    0);
   xlsubr("PRINC",     SUBR,  subPRINC,    0);
+  xlsubr("PROMPT",    SUBR,  subPROMPT,   0);
   xlsubr("RTOS",      SUBR,  subRTOS,     0);
   xlsubr("SETVAR",    SUBR,  subSETVAR,   0);
+  xlsubr("STRCASE",   SUBR,  subSTRCASE,  0);
   xlsubr("STRCAT",    SUBR,  subSTRCAT,   0);
+  xlsubr("STRLEN",    SUBR,  subSTRLEN,   0);
+  xlsubr("SUBSTR",    SUBR,  subSUBSTR,   0);
   xlsubr("WHILE",     FSUBR, fsubWHILE,   0);
 }

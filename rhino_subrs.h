@@ -20,6 +20,13 @@ extern "C" {
   int rhino_glue_getvar_clayer(char* out, int out_cap);
   int rhino_glue_setvar_clayer(const char* name);
 
+  int helperGetOSnapMode(int* out_value);
+  int helperSetOSnapMode(int value);
+
+  int helpGetEcho(int* out_value);
+  int helperSetEcho(int value);
+
+  int helperIntersectLineLine(double* points, int bounded, double* outX, double* outY, double* outZ);
 
   int rhino_glue_make_layer(const char* name, const char* color);
   int rhino_glue_set_current_layer(const char* name);

@@ -265,6 +265,75 @@ extern "C" int rhino_glue_setvar_clayer(const char* name)
   return doc->m_layer_table.SetCurrentLayerIndex(idx) ? 1 : 0;
 }
 
+// ---------------------------------------------------------------------
+// OSMODE / CMDECHO - shadowed system variables.
+//
+// AutoLISP scripts typically use these in the save-modify-restore
+// idiom:  (setq old (getvar "OSMODE")) ... (setvar "OSMODE" 0) ...
+// (setvar "OSMODE" old). For that to work we only have to round-trip
+// the value; we do NOT have to actually flip Rhino's running osnaps
+// or mute the command echo to unblock the scripts. Today these are
+// pure shadow variables - their values persist for the Rhino session
+// but don't drive any real Rhino state.
+//
+// Upgrade paths:
+//   - OSMODE: bits 1..16384 map to Rhino's CRhinoAppSettings osnap
+//     toggles. A future revision can apply the bits on each setvar.
+//   - CMDECHO: when 0, RhinoAppRunScript() above could call the
+//     echo-mode-suppressed overload of RhinoApp().RunScript() in
+//     Rhino 6+ SDKs.
+// ---------------------------------------------------------------------
+static int g_osmode  = 0;   /* AutoCAD default: no running snaps */
+static int g_cmdecho = 1;   /* AutoCAD default: echo commands */
+
+extern "C" int helperGetOSnapMode(int* out_value)
+{
+  if (!out_value) return 0;
+  *out_value = g_osmode;
+  return 1;
+}
+
+extern "C" int helperSetOSnapMode(int value)
+{
+  g_osmode = value;
+  return 1;
+}
+
+extern "C" int helpGetEcho(int* out_value)
+{
+  if (!out_value) return 0;
+  *out_value = g_cmdecho;
+  return 1;
+}
+
+extern "C" int helperSetEcho(int value)
+{
+  g_cmdecho = value;
+  return 1;
+}
+
+extern "C" int helperIntersectLineLine(double* points, int bounded, double* outX, double* outY, double* outZ)
+{
+  if (nullptr == points || nullptr == outX || nullptr == outY || nullptr == outZ)
+    return FALSE;
+  ON_Line line1(ON_3dPoint(points[0], points[1], points[2]), ON_3dPoint(points[3], points[4], points[5]));
+  ON_Line line2(ON_3dPoint(points[6], points[7], points[8]), ON_3dPoint(points[9], points[10], points[11]));
+  double a = 0;
+  double b = 0;
+  if (!ON_Intersect(line1, line2, &a, &b))
+    return FALSE;
+
+  if (bounded && (a < 0 || a>1))
+    return FALSE;
+
+  ON_3dPoint rc = line1.PointAt(a);
+  *outX = rc.x;
+  *outY = rc.y;
+  *outZ = rc.z;
+  return TRUE;
+}
+
+
 // Helper used by (command "LAYER" "M" name "C" color ...).
 // Creates the layer (or finds it), optionally sets its color.
 extern "C" int rhino_glue_make_layer(const char* name, const char* color)
@@ -308,15 +377,16 @@ extern "C" int rhino_glue_set_current_layer(const char* name)
 }
 
 // Add a single line segment to the doc on the current layer.
-extern "C" int rhino_glue_add_line(double x1, double y1, double z1,
-  double x2, double y2, double z2)
+extern "C" int rhino_glue_add_line(double x1, double y1, double z1, double x2, double y2, double z2)
 {
   CRhinoDoc* doc = CRhinoDoc::FromRuntimeSerialNumber(g_running_script_document);
-  if (!doc) return 0;
+  if (!doc)
+    return 0;
 
-  ON_LineCurve lc(ON_3dPoint(x1, y1, z1), ON_3dPoint(x2, y2, z2));
-  CRhinoCurveObject* obj = doc->AddCurveObject(lc);
-  if (!obj) return 0;
+  ON_Line line(ON_3dPoint(x1, y1, z1), ON_3dPoint(x2, y2, z2));
+  CRhinoCurveObject* obj = doc->AddCurveObject(line);
+  if (!obj)
+    return 0;
 
   doc->Redraw();
   return 1;
