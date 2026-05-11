@@ -9,6 +9,74 @@
 #include "rhino_subrs.h"
 #include <string>
 
+#undef max
+
+static void CopyToString(char* dst, int cap, const char* src)
+{
+  if (!dst || cap <= 0) return;
+  memset(dst, 0, cap * sizeof(char));
+  if (src)
+  {
+    int length = std::max(ON_String::Length(src), cap - 1);
+    memcpy(dst, src, length);
+  }
+}
+
+// Map a named color to an ON_Color
+static bool ColorFromString(const char* text, ON_Color& out)
+{
+  struct { const char* name; unsigned r, g, b; } table[] = {
+      { "RED",     255,   0,   0 },
+      { "YELLOW",  255, 255,   0 },
+      { "GREEN",     0, 255,   0 },
+      { "CYAN",      0, 255, 255 },
+      { "BLUE",      0,   0, 255 },
+      { "MAGENTA", 255,   0, 255 },
+      { "WHITE",   255, 255, 255 },
+      { "BLACK",     0,   0,   0 },
+      { "GRAY",    128, 128, 128 },
+      { "GREY",    128, 128, 128 },
+      { "1",       255,   0,   0 },
+      { "2",       255, 255,   0 },
+      { "3",         0, 255,   0 },
+      { "4",         0, 255, 255 },
+      { "5",         0,   0, 255 },
+      { "6",       255,   0, 255 },
+      { "7",       255, 255, 255 }
+  };
+  if (nullptr==text)
+    return false;
+
+  ON_String colorName = text;
+  for (size_t i = 0; i < sizeof(table); i++)
+  {
+    if (colorName.EqualOrdinal(table[i].name, true))
+    {
+      out.SetRGB((int)table[i].r, (int)table[i].g, (int)table[i].b);
+      return true;
+    }
+  }
+
+  return false;
+}
+
+// Attempt to convert an ON_Color to an acad color index for the standard 7
+// color. Anything else falls through to BYLAYER (256).
+static int ColorIndexFromON_Color(const ON_Color& c)
+{
+  int r = c.Red(), g = c.Green(), b = c.Blue();
+  if (r == 255 && g == 0 && b == 0)   return 1;
+  if (r == 255 && g == 255 && b == 0)   return 2;
+  if (r == 0 && g == 255 && b == 0)   return 3;
+  if (r == 0 && g == 255 && b == 255) return 4;
+  if (r == 0 && g == 0 && b == 255) return 5;
+  if (r == 255 && g == 0 && b == 255) return 6;
+  if (r == 255 && g == 255 && b == 255) return 7;
+  if (r == 0 && g == 0 && b == 0)   return 7;
+  return 256;
+}
+
+
 static unsigned int g_running_script_document = 0;
 extern "C" void SetRunningScriptDocument(unsigned int docId)
 {
@@ -26,7 +94,6 @@ extern "C" void RhinoAppRunScript(const char* command, const char* args)
   RhinoApp().RunScript(g_running_script_document, s.Array());
 }
 
-
 extern "C" void RhinoAppPrint(const char* msg)
 {
   ON_wString s = msg;
@@ -35,6 +102,13 @@ extern "C" void RhinoAppPrint(const char* msg)
   // Throw a newline in if the input was empty or didn't end in a newline
   if (s.Length() == 0 || s[s.Length() - 1] != L'\n')
     RhinoApp().Print(L"\n");
+}
+
+extern "C" void helperALERT(const char* msg)
+{
+  ON_wString alert = msg;
+  alert.TrimLeftAndRight();
+  RhinoMessageBox(alert.Array(), L"Alert", MB_OK | MB_ICONINFORMATION);
 }
 
 extern "C" int helperGETREAL(const char* prompt, double* value)
@@ -148,60 +222,8 @@ extern "C" int helperGETPOINT(const char* prompt,
   return 1;
 }
 
-
-extern "C" {
-
-// Map an AutoCAD-style color word ("YELLOW", "RED", "1", "2", ...) to
-// a 0xRRGGBB ON_Color. Returns 1 on success, 0 if unrecognized.
-  static int color_word_to_oncolor(const char* word, ON_Color* out)
-  {
-    struct { const char* name; unsigned r, g, b; } table[] = {
-        { "RED",     255,   0,   0 },
-        { "YELLOW",  255, 255,   0 },
-        { "GREEN",     0, 255,   0 },
-        { "CYAN",      0, 255, 255 },
-        { "BLUE",      0,   0, 255 },
-        { "MAGENTA", 255,   0, 255 },
-        { "WHITE",   255, 255, 255 },
-        { "BLACK",     0,   0,   0 },
-        { "GRAY",    128, 128, 128 },
-        { "GREY",    128, 128, 128 },
-    };
-    if (!word || !*word) return 0;
-
-    // Uppercase compare.
-    char up[32]; int i;
-    for (i = 0; i < 31 && word[i]; ++i) {
-      char c = word[i];
-      up[i] = (c >= 'a' && c <= 'z') ? (char)(c - 32) : c;
-    }
-    up[i] = 0;
-
-    for (size_t k = 0; k < sizeof(table) / sizeof(table[0]); ++k) {
-      if (strcmp(up, table[k].name) == 0) {
-        out->SetRGB((int)table[k].r, (int)table[k].g, (int)table[k].b);
-        return 1;
-      }
-    }
-
-    // Numeric AutoCAD color index (1..7 mostly): treat 1=red,2=yellow,etc.
-    if (word[0] >= '0' && word[0] <= '9') {
-      int n = atoi(word);
-      switch (n) {
-      case 1: out->SetRGB(255, 0, 0); return 1;
-      case 2: out->SetRGB(255, 255, 0); return 1;
-      case 3: out->SetRGB(0, 255, 0); return 1;
-      case 4: out->SetRGB(0, 255, 255); return 1;
-      case 5: out->SetRGB(0, 0, 255); return 1;
-      case 6: out->SetRGB(255, 0, 255); return 1;
-      case 7: out->SetRGB(255, 255, 255); return 1;
-      }
-    }
-    return 0;
-  }
-
 // (getvar "CLAYER") - write the current layer's name to `out` (ASCII).
-int rhino_glue_getvar_clayer(char* out, int out_cap)
+extern "C" int rhino_glue_getvar_clayer(char* out, int out_cap)
 {
   if (!out || out_cap <= 0) return 0;
   out[0] = '\0';
@@ -222,7 +244,7 @@ int rhino_glue_getvar_clayer(char* out, int out_cap)
 
 // (setvar "CLAYER" "name") - switch the doc to the named layer
 // (creating it if it doesn't exist).
-int rhino_glue_setvar_clayer(const char* name)
+extern "C" int rhino_glue_setvar_clayer(const char* name)
 {
   if (!name || !*name) return 0;
 
@@ -245,7 +267,7 @@ int rhino_glue_setvar_clayer(const char* name)
 
 // Helper used by (command "LAYER" "M" name "C" color ...).
 // Creates the layer (or finds it), optionally sets its color.
-int rhino_glue_make_layer(const char* name, const char* color)
+extern "C" int rhino_glue_make_layer(const char* name, const char* color)
 {
   if (!name || !*name) return 0;
 
@@ -261,7 +283,7 @@ int rhino_glue_make_layer(const char* name, const char* color)
     layer.SetName(wName);
     if (color && *color) {
       ON_Color c;
-      if (color_word_to_oncolor(color, &c))
+      if (ColorFromString(color, c))
         layer.SetColor(c);
     }
     idx = doc->m_layer_table.AddLayer(layer);
@@ -271,7 +293,7 @@ int rhino_glue_make_layer(const char* name, const char* color)
   // Existing layer - update the color if one was specified.
   if (color && *color) {
     ON_Color c;
-    if (color_word_to_oncolor(color, &c)) {
+    if (ColorFromString(color, c)) {
       ON_Layer mod = doc->m_layer_table[idx];
       mod.SetColor(c);
       doc->m_layer_table.ModifyLayer(mod, idx);
@@ -280,13 +302,13 @@ int rhino_glue_make_layer(const char* name, const char* color)
   return 1;
 }
 
-int rhino_glue_set_current_layer(const char* name)
+extern "C" int rhino_glue_set_current_layer(const char* name)
 {
   return rhino_glue_setvar_clayer(name);
 }
 
 // Add a single line segment to the doc on the current layer.
-int rhino_glue_add_line(double x1, double y1, double z1,
+extern "C" int rhino_glue_add_line(double x1, double y1, double z1,
   double x2, double y2, double z2)
 {
   CRhinoDoc* doc = CRhinoDoc::FromRuntimeSerialNumber(g_running_script_document);
@@ -298,16 +320,6 @@ int rhino_glue_add_line(double x1, double y1, double z1,
 
   doc->Redraw();
   return 1;
-}
-
-} // extern "C"
-
-// (alert msg) - modal message box
-extern "C" void helperALERT(const char* msg)
-{
-  ON_wString alert = msg;
-  alert.TrimLeftAndRight();
-  RhinoMessageBox(alert.Array(), L"Alert", MB_OK | MB_ICONINFORMATION);
 }
 
 extern "C" int helperGETSTRING(const char* prompt, int allow_spaces, char* out, int out_cap)
@@ -337,5 +349,200 @@ extern "C" int helperGETSTRING(const char* prompt, int allow_spaces, char* out, 
   if (n >= out_cap) n = out_cap - 1;
   if (n > 0) memcpy(out, aResult.Array(), n);
   out[n] = '\0';
+  return TRUE;
+}
+
+// ---------------------------------------------------------------------
+// Entity-name / DXF mapping.
+//
+// AutoLISP scripts treat the document as a flat collection of typed
+// "entities" exposed through (entsel) + (entget). entget returns an
+// association list whose elements are (group-code . value), and the
+// group-code numbers come from the AutoCAD DXF reference.
+//
+// Rhino has no DXF model internally, so we synthesize the assoc list
+// from CRhinoObject + ON_Geometry. The mapping is intentionally narrow
+// - just the codes most scripts actually look up: 0 (type), 5 (handle),
+// 8 (layer), 10/11 (points), 40 (radius), 50 (angle), 62 (color),
+// 70 (flags). Scripts that walk obscure group codes will see them as
+// absent and will need extension here.
+// ---------------------------------------------------------------------
+
+// Fill type-string + per-type fields from an ON_Geometry. Returns
+// quietly with type="ENTITY" if we don't recognize the geometry.
+static void fill_geometry_props(const ON_Geometry* geom, RhinoEntityProps* out)
+{
+  if (!geom)
+  {
+    CopyToString(out->type, sizeof(out->type), "ENTITY");
+    return;
+  }
+
+  // Curves: line, circle/arc, polyline, generic NURBS.
+  if (const ON_Curve* curve = ON_Curve::Cast(geom))
+  {
+    if (const ON_LineCurve* lc = ON_LineCurve::Cast(curve))
+    {
+      CopyToString(out->type, sizeof(out->type), "LINE");
+      out->has_pt10 = 1;
+      out->pt10[0] = lc->m_line.from.x;
+      out->pt10[1] = lc->m_line.from.y;
+      out->pt10[2] = lc->m_line.from.z;
+      out->has_pt11 = 1;
+      out->pt11[0] = lc->m_line.to.x;
+      out->pt11[1] = lc->m_line.to.y;
+      out->pt11[2] = lc->m_line.to.z;
+      return;
+    }
+    if (const ON_ArcCurve* ac = ON_ArcCurve::Cast(curve))
+    {
+      const bool is_circle = ac->IsCircle();
+      CopyToString(out->type, sizeof(out->type), is_circle ? "CIRCLE" : "ARC");
+      ON_3dPoint c = ac->m_arc.Center();
+      out->has_pt10  = 1;
+      out->pt10[0]   = c.x;
+      out->pt10[1]   = c.y;
+      out->pt10[2]   = c.z;
+      out->has_radius = 1;
+      out->radius     = ac->m_arc.Radius();
+      if (!is_circle) {
+        // AutoCAD ARC group 50 is the start angle in radians.
+        out->has_angle = 1;
+        out->angle     = ac->m_arc.AngleRadians();
+      }
+      return;
+    }
+    if (const ON_PolylineCurve* pl = ON_PolylineCurve::Cast(curve))
+    {
+      CopyToString(out->type, sizeof(out->type), "LWPOLYLINE");
+      if (pl->PointCount() > 0) {
+        ON_3dPoint p0 = pl->PointAt(0.0);
+        out->has_pt10 = 1;
+        out->pt10[0] = p0.x;
+        out->pt10[1] = p0.y;
+        out->pt10[2] = p0.z;
+      }
+      out->has_flag70 = 1;
+      out->flag70     = pl->IsClosed() ? 1 : 0;
+      return;
+    }
+    // Generic curve - report it as a spline so scripts at least see
+    // a curve-shaped entity.
+    CopyToString(out->type, sizeof(out->type), "SPLINE");
+    ON_3dPoint p0 = curve->PointAtStart();
+    out->has_pt10 = 1;
+    out->pt10[0] = p0.x;
+    out->pt10[1] = p0.y;
+    out->pt10[2] = p0.z;
+    return;
+  }
+
+  // Points.
+  if (const ON_Point* pt = ON_Point::Cast(geom))
+  {
+    CopyToString(out->type, sizeof(out->type), "POINT");
+    out->has_pt10 = 1;
+    out->pt10[0]  = pt->point.x;
+    out->pt10[1]  = pt->point.y;
+    out->pt10[2]  = pt->point.z;
+    return;
+  }
+
+  // Higher-level types we recognize by family but don't decompose.
+  if (ON_Brep::Cast(geom))       { CopyToString(out->type, sizeof(out->type), "BREP");    return; }
+  if (ON_Surface::Cast(geom))    { CopyToString(out->type, sizeof(out->type), "SURFACE"); return; }
+  if (ON_Mesh::Cast(geom))       { CopyToString(out->type, sizeof(out->type), "MESH");    return; }
+
+  CopyToString(out->type, sizeof(out->type), "ENTITY");
+}
+
+extern "C" int helperENTSEL(const char* prompt,
+                            unsigned int* out_sn,
+                            double* out_px, double* out_py, double* out_pz)
+{
+  if (!out_sn || !out_px || !out_py || !out_pz)
+    return FALSE;
+  *out_sn = 0;
+  *out_px = *out_py = *out_pz = 0.0;
+
+  CRhinoGetObject go;
+  if (prompt && *prompt)
+  {
+    ON_wString wPrompt = prompt;
+    wPrompt.TrimLeftAndRight();
+    go.SetCommandPrompt(wPrompt);
+  }
+
+  go.EnableSubObjectSelect(FALSE);
+  go.EnableDeselectAllBeforePostSelect(FALSE);
+
+  if (go.GetObjects(1, 1) != CRhinoGet::object)
+    return FALSE;
+
+  const CRhinoObjRef& oref = go.Object(0);
+  const CRhinoObject* obj  = oref.Object();
+  if (!obj)
+    return FALSE;
+
+  *out_sn = (unsigned int)obj->RuntimeSerialNumber();
+
+  ON_3dPoint pt;
+  if (oref.SelectionPoint(pt) && pt.IsValid())
+  {
+    *out_px = pt.x;
+    *out_py = pt.y;
+    *out_pz = pt.z;
+  }
+  return TRUE;
+}
+
+extern "C" int helperGETENT(unsigned int sn, RhinoEntityProps* out)
+{
+  if (!out) return FALSE;
+  memset(out, 0, sizeof(*out));
+
+  CRhinoDoc* doc = CRhinoDoc::FromRuntimeSerialNumber(g_running_script_document);
+  const CRhinoObject* obj = CRhinoObject::FromRuntimeSerialNumber(g_running_script_document, sn);
+  if (nullptr==doc || nullptr==obj)
+    return FALSE;
+
+  // Layer (DXF group 8).
+  {
+    const CRhinoObjectAttributes& attrs = obj->Attributes();
+    int layer_idx = attrs.m_layer_index;
+    if (layer_idx >= 0 && layer_idx < doc->m_layer_table.LayerCount())
+    {
+      const CRhinoLayer& layer = doc->m_layer_table[layer_idx];
+      ON_String aName(layer.Name());
+      CopyToString(out->layer, sizeof(out->layer), static_cast<const char*>(aName));
+    }
+  }
+
+  // Handle (DXF group 5) - object UUID as a compact hex string.
+  {
+    ON_UUID id = obj->Id();
+    ON_String s;
+    ON_UuidToString(id, s);
+    CopyToString(out->handle, sizeof(out->handle), static_cast<const char*>(s));
+  }
+
+  // Color (DXF group 62). BYLAYER if the object inherits its color.
+  {
+    const CRhinoObjectAttributes& attrs = obj->Attributes();
+    if (attrs.ColorSource() == ON::color_from_layer)
+    {
+      out->has_color = 1;
+      out->color_idx = 256;  // BYLAYER
+    }
+    else
+    {
+      out->has_color = 1;
+      out->color_idx = ColorIndexFromON_Color(attrs.m_color);
+    }
+  }
+
+  // Type-specific geometry data (0, 10, 11, 40, 50, 70).
+  fill_geometry_props(obj->Geometry(), out);
+
   return TRUE;
 }

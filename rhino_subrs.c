@@ -204,6 +204,165 @@ LVAL subGETPOINT(void)
 }
 
 // ---------------------------------------------------------------------
+// Entity-list helpers used by ENTSEL/ENTGET.
+//
+// XLISP's GC may run inside any allocator (cons, cvstring, cvflonum,
+// newnode, ...) and only inspects LVALs that are on the protect stack.
+// The build functions below keep result/pair/key/val protected across
+// every allocation, then xlpopn() once before returning.
+// ---------------------------------------------------------------------
+static LVAL EntPushStringPair(LVAL alist, int code, const char* s)
+{
+  LVAL pair, key, val;
+  xlstkcheck(3);
+  xlprotect(pair); xlprotect(key); xlprotect(val);
+  val  = cvstring((char FAR*)(s ? s : ""));
+  key  = cvfixnum((FIXTYPE)code);
+  pair = cons(key, val);
+  alist = cons(pair, alist);
+  xlpopn(3);
+  return alist;
+}
+
+static LVAL EntPushFixnumPair(LVAL alist, int code, long n)
+{
+  LVAL pair, key, val;
+  xlstkcheck(3);
+  xlprotect(pair); xlprotect(key); xlprotect(val);
+  val  = cvfixnum((FIXTYPE)n);
+  key  = cvfixnum((FIXTYPE)code);
+  pair = cons(key, val);
+  alist = cons(pair, alist);
+  xlpopn(3);
+  return alist;
+}
+
+static LVAL EntPushFlonumPair(LVAL alist, int code, double f)
+{
+  LVAL pair, key, val;
+  xlstkcheck(3);
+  xlprotect(pair); xlprotect(key); xlprotect(val);
+  val  = cvflonum((FLOTYPE)f);
+  key  = cvfixnum((FIXTYPE)code);
+  pair = cons(key, val);
+  alist = cons(pair, alist);
+  xlpopn(3);
+  return alist;
+}
+
+// (code X Y Z)  i.e.  (code . (X Y Z))  -- the AutoLISP shape for a
+// DXF point entry. Reading is symmetric: (cdr (assoc 10 e)) -> (X Y Z).
+static LVAL EntPushPointPair(LVAL alist, int code, const double* xyz)
+{
+  LVAL pair, key, pt;
+  xlstkcheck(3);
+  xlprotect(pair); xlprotect(key); xlprotect(pt);
+  pt   = MakePointList(xyz[0], xyz[1], xyz[2]);
+  key  = cvfixnum((FIXTYPE)code);
+  pair = cons(key, pt);
+  alist = cons(pair, alist);
+  xlpopn(3);
+  return alist;
+}
+
+// ---------------------------------------------------------------------
+// (entsel [prompt]) -> (ename pick-point) or NIL
+//
+// `ename` is the object's runtime serial number wrapped as a fixnum.
+// The lisp side treats it as opaque - passing it to entget is the
+// only documented use.
+// ---------------------------------------------------------------------
+LVAL subENTSEL(void)
+{
+  const char* prompt = NULL;
+  char prompt_buf[256];
+  prompt_buf[0] = '\0';
+
+  while (moreargs())
+  {
+    LVAL a = xlgetarg();
+    if (stringp(a))
+    {
+      const char* s = (const char*)getstring(a);
+      int n;
+      for (n = 0; n < (int)sizeof(prompt_buf) - 1 && s[n]; ++n)
+        prompt_buf[n] = s[n];
+      prompt_buf[n] = '\0';
+      prompt = prompt_buf;
+    }
+  }
+
+  unsigned int sn = 0;
+  double px = 0, py = 0, pz = 0;
+  if (!helperENTSEL(prompt, &sn, &px, &py, &pz))
+    return NIL;
+
+  LVAL result, pt, ename;
+  xlstkcheck(3);
+  xlprotect(result); xlprotect(pt); xlprotect(ename);
+  ename  = cvfixnum((FIXTYPE)sn);
+  pt     = MakePointList(px, py, pz);
+  result = cons(pt, NIL);
+  result = cons(ename, result);
+  xlpopn(3);
+  return result;
+}
+
+// ---------------------------------------------------------------------
+// (entget ename) -> association list of (group-code . value) pairs.
+//
+// Group codes we synthesize from Rhino state:
+//   0  type     ("LINE", "CIRCLE", "ARC", "LWPOLYLINE", "POINT",
+//                "SPLINE", "BREP", "SURFACE", "MESH", "ENTITY")
+//   5  handle   UUID string
+//   8  layer    layer name
+//   10 primary  point (start / center / insertion)
+//   11 endpoint (LINE only)
+//   40 radius   (CIRCLE / ARC)
+//   50 angle    (ARC start angle, radians)
+//   62 color    AutoCAD color index; 256 = BYLAYER
+//   70 flags    bit 1 = closed polyline
+//
+// Returns NIL if the runtime serial number doesn't resolve to a live
+// object in the active document.
+// ---------------------------------------------------------------------
+LVAL subENTGET(void)
+{
+  LVAL arg = xlgetarg();
+  xllastarg();
+
+  /* Tolerate NIL so (entget (car (entsel))) doesn't blow up when the
+     user cancels entsel. Non-fixnum garbage also degrades to NIL. */
+  if (null(arg) || !fixp(arg))
+    return NIL;
+
+  unsigned int sn = (unsigned int)getfixnum(arg);
+
+  RhinoEntityProps p;
+  if (!helperGETENT(sn, &p))
+    return NIL;
+
+  LVAL result;
+  xlsave1(result);
+  result = NIL;
+
+  // Build in reverse: last prepend ends up at the head. We want type
+  // first because (cdr (assoc 0 e)) is by far the most common probe.
+  if (p.has_flag70) result = EntPushFixnumPair(result, 70, (long)p.flag70);
+  if (p.has_angle)  result = EntPushFlonumPair(result, 50, p.angle);
+  if (p.has_radius) result = EntPushFlonumPair(result, 40, p.radius);
+  if (p.has_pt11)   result = EntPushPointPair (result, 11, p.pt11);
+  if (p.has_pt10)   result = EntPushPointPair (result, 10, p.pt10);
+  if (p.has_color)  result = EntPushFixnumPair(result, 62, (long)p.color_idx);
+  if (p.handle[0])  result = EntPushStringPair(result, 5,  p.handle);
+  if (p.layer[0])   result = EntPushStringPair(result, 8,  p.layer);
+                    result = EntPushStringPair(result, 0,  p.type);
+
+  xlpop();
+  return result;
+}
+
+// ---------------------------------------------------------------------
 // (getint [msg]) -> integer-or-NIL
 //   msg : optional prompt string.
 // Same shape as GETREAL but returns a fixnum. Cancel -> NIL.
@@ -322,7 +481,6 @@ LVAL subSTRCAT(void)
 //               4=architectural, 5=fractional. Modes 3-5 are AutoCAD
 //               imperial conventions; we fall back to decimal for them.
 //   precision : digits after the decimal point. Default 4.
-// ---------------------------------------------------------------------
 LVAL subRTOS(void)
 {
   double n         = ArgAsDouble();
@@ -435,6 +593,46 @@ LVAL subBOOLE(void)
   }
 
   return cvfixnum((FIXTYPE)acc);
+}
+
+// (getstring [cr] [msg])
+LVAL subGETSTRING(void)
+{
+  int   allow_spaces = 0;
+  char  prompt_buf[256];
+  const char* prompt = NULL;
+  char  out_buf[1024];
+
+  prompt_buf[0] = '\0';
+  out_buf[0] = '\0';
+
+  while (moreargs())
+  {
+    LVAL a = xlgetarg();
+    if (stringp(a))
+    {
+      const char* s = (const char*)getstring(a);
+      int n;
+      for (n = 0; n < (int)sizeof(prompt_buf) - 1 && s[n]; ++n)
+        prompt_buf[n] = s[n];
+      prompt_buf[n] = '\0';
+      prompt = prompt_buf;
+    }
+    else if (a == NIL)
+    {
+      allow_spaces = 0;
+    }
+    else
+    {
+      // T, a number, a symbol other than NIL - treat as "allow spaces".
+      allow_spaces = 1;
+    }
+  }
+
+  if (!helperGETSTRING(prompt, allow_spaces, out_buf, (int)sizeof(out_buf)))
+    return NIL;
+
+  return cvstring(out_buf);
 }
 
 /* --------------------------------------------------------------------- */
@@ -675,10 +873,9 @@ LVAL fsubCOMMAND(void)
       }
       for (int j = 0; j < (int)sizeof(tok) && argsIndex < ((int)sizeof(args)-1); j++)
       {
-        if (tok[j] == 0 || tok[j] == '\0')
-        {
+        if (tok[j] == 0)
           break;
-        }
+
         args[argsIndex++] = tok[j];
       }
       if (argsIndex < ((int)sizeof(args) - 1))
@@ -801,9 +998,6 @@ LVAL fsubDEFUN(void)
   return name;
 }
 
-// ---------------------------------------------------------------------
-// (while test body...) - AutoLISP loop construct.
-//
 // XLISP-PLUS ships with LOOP (iterate forever, exit via RETURN) and a
 // number of DO variants, but no WHILE. Many AutoLISP scripts spell
 // their loops as (while T ...) or (while (setq x ...) ...), so we add
@@ -813,6 +1007,7 @@ LVAL fsubDEFUN(void)
 //   - Repeat. Return NIL when test goes NIL (also our return value if
 //     the loop never runs).
 // ---------------------------------------------------------------------
+// (while testexpr [expr ...])
 LVAL fsubWHILE(void)
 {
   if (xlargc < 1) xlfail("WHILE: missing test form");
@@ -851,51 +1046,6 @@ LVAL fsubWHILE(void)
 }
 
 // ---------------------------------------------------------------------
-// (getstring [cr] [prompt]) -> string-or-NIL
-//   cr     : optional. T (or any non-nil) means "accept whitespace".
-//   prompt : optional string.
-// Args are positional but type-driven (matches AutoLISP's flexibility).
-// ---------------------------------------------------------------------
-LVAL subGETSTRING(void)
-{
-  int   allow_spaces = 0;
-  char  prompt_buf[256];
-  const char *prompt = NULL;
-  char  out_buf[1024];
-
-  prompt_buf[0] = '\0';
-  out_buf[0]    = '\0';
-
-  while (moreargs())
-  {
-    LVAL a = xlgetarg();
-    if (stringp(a))
-    {
-      const char *s = (const char *)getstring(a);
-      int n;
-      for (n = 0; n < (int)sizeof(prompt_buf) - 1 && s[n]; ++n)
-        prompt_buf[n] = s[n];
-      prompt_buf[n] = '\0';
-      prompt = prompt_buf;
-    }
-    else if (a == NIL)
-    {
-      allow_spaces = 0;
-    }
-    else
-    {
-      // T, a number, a symbol other than NIL - treat as "allow spaces".
-      allow_spaces = 1;
-    }
-  }
-
-  if (!helperGETSTRING(prompt, allow_spaces, out_buf, (int)sizeof(out_buf)))
-    return NIL;
-
-  return cvstring(out_buf);
-}
-
-// ---------------------------------------------------------------------
 // Registration. Called once from rhino_xlisp_init() in the driver,
 // after xlinit() has built the interpreter image.
 // ---------------------------------------------------------------------
@@ -906,6 +1056,8 @@ void RegisterCustomLispFunctions(void)
   xlsubr("BOOLE",     SUBR,  subBOOLE,    0);
   xlsubr("COMMAND",   FSUBR, fsubCOMMAND, 0);
   xlsubr("DEFUN",     FSUBR, fsubDEFUN,   0);
+  xlsubr("ENTGET",    SUBR,  subENTGET,   0);
+  xlsubr("ENTSEL",    SUBR,  subENTSEL,   0);
   xlsubr("GETDIST",   SUBR,  subGETDIST,  0);
   xlsubr("GETINT",    SUBR,  subGETINT,   0);
   xlsubr("GETPOINT",  SUBR,  subGETPOINT, 0);
