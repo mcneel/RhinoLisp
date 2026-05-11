@@ -26,6 +26,28 @@ extern "C" {
   int helpGetEcho(int* out_value);
   int helperSetEcho(int value);
 
+  int helperGetOSnapCoord(int* out_value);
+  int helperSetOSnapCoord(int value);
+
+  int helperGetOrthoMode(int* out_value);
+  int helperSetOrthoMode(int value);
+
+  int helperGetSnapAng(double* out_value);
+  int helperSetSnapAng(double value);
+
+  int helperGetViewTwist(double* out_value);
+  int helperSetViewTwist(double value);
+
+  int helperGetAUnits(int* out_value);
+  int helperSetAUnits(int value);
+
+  int helperGetAUPrec(int* out_value);
+  int helperSetAUPrec(int value);
+
+  int helperGETANGLE(const char* prompt,
+                     int has_base, double bx, double by, double bz,
+                     double* angle);
+
   int helperIntersectLineLine(double* points, int bounded, double* outX, double* outY, double* outZ);
 
   int rhino_glue_make_layer(const char* name, const char* color);

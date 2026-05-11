@@ -212,6 +212,35 @@ LVAL subGETPOINT(void)
 }
 
 // ---------------------------------------------------------------------
+// (getcorner [pt] [msg]) -> point-or-NIL
+//
+// In strict AutoLISP, getcorner takes a REQUIRED base point and an
+// optional message; the difference from getpoint is the rubber-band
+// rectangle UX. In practice, scripts in the wild routinely call
+// (getcorner "prompt") with just a string, expecting getpoint-style
+// behavior. We accept either - point and message in any order, both
+// optional - and degrade to a line rubber-band when no base point is
+// supplied. (A true rectangle preview would require subclassing
+// CRhinoGetPoint with a custom DynamicDraw.)
+// ---------------------------------------------------------------------
+LVAL subGETCORNER(void)
+{
+  int    has_base = 0;
+  double bx = 0, by = 0, bz = 0;
+  const char* prompt = NULL;
+  char   prompt_buf[256];
+  double rx, ry, rz;
+
+  ParseOptionalPointAndMessage(&has_base, &bx, &by, &bz,
+    &prompt, prompt_buf, (int)sizeof(prompt_buf));
+
+  if (!helperGETPOINT(prompt, has_base, bx, by, bz, &rx, &ry, &rz))
+    return NIL;
+
+  return MakePointList(rx, ry, rz);
+}
+
+// ---------------------------------------------------------------------
 // Entity-list helpers used by ENTSEL/ENTGET.
 //
 // XLISP's GC may run inside any allocator (cons, cvstring, cvflonum,
@@ -436,6 +465,32 @@ LVAL subGETREAL(void)
 }
 
 // ---------------------------------------------------------------------
+// (getangle [pt] [msg]) -> radians-or-NIL
+//
+// Like GETDIST, accepts the AutoLISP-style optional point + message in
+// either order. With a base point, CRhinoGetAngle draws a rubber-band
+// reference so the user can either click a direction or type a number.
+// Result is in radians regardless of the current AUNITS setting -
+// that matches AutoLISP, which uses radians internally and only honors
+// AUNITS when formatting via ANGTOS.
+// ---------------------------------------------------------------------
+LVAL subGETANGLE(void)
+{
+  int    has_base = 0;
+  double bx = 0, by = 0, bz = 0;
+  const char* prompt = NULL;
+  char   prompt_buf[256];
+
+  ParseOptionalPointAndMessage(&has_base, &bx, &by, &bz,
+    &prompt, prompt_buf, (int)sizeof(prompt_buf));
+
+  double angle = 0.0;
+  if (!helperGETANGLE(prompt, has_base, bx, by, bz, &angle))
+    return NIL;
+  return cvflonum((FLOTYPE)angle);
+}
+
+// ---------------------------------------------------------------------
 // (strcat [s1 s2 ...]) -> string
 //
 // XLISP's CONCATENATE works on sequences in general but requires a
@@ -528,6 +583,97 @@ LVAL subRTOS(void)
     snprintf(fmt, sizeof(fmt), "%%.%df", precision);
   }
   snprintf(buf, sizeof(buf), fmt, n);
+  return cvstring(buf);
+}
+
+// ---------------------------------------------------------------------
+// (angtos radians [mode [precision]]) -> string
+//
+// Format an angle (in radians) as a human-readable string. The mode
+// values are the AutoCAD AUNITS conventions:
+//   0  decimal degrees   (e.g. "45.0000")
+//   1  degrees / minutes / seconds (e.g. "45d0'0\"")
+//   2  gradians          (e.g. "50.0000g")
+//   3  radians           (e.g. "0.7854r")
+//   4  surveyor units    (not fully implemented - falls through to
+//                         decimal degrees, with a placeholder format)
+//
+// When mode or precision is omitted, the corresponding sysvar (AUNITS
+// or AUPREC) is consulted. This lets scripts that set those globals
+// at the top of the file get consistent formatting from every ANGTOS
+// call further down, just like real AutoLISP.
+// ---------------------------------------------------------------------
+LVAL subANGTOS(void)
+{
+  double radians   = ArgAsDouble();
+  int    mode      = -1;     /* sentinel: read AUNITS */
+  int    precision = -1;     /* sentinel: read AUPREC */
+
+  if (moreargs())
+  {
+    LVAL m = xlgetarg();
+    if (fixp(m))        mode = (int)getfixnum(m);
+    else if (floatp(m)) mode = (int)getflonum(m);
+    else xlerror("angtos: mode must be a number", m);
+  }
+  if (moreargs())
+  {
+    LVAL p = xlgetarg();
+    if (fixp(p))        precision = (int)getfixnum(p);
+    else if (floatp(p)) precision = (int)getflonum(p);
+    else xlerror("angtos: precision must be a number", p);
+  }
+  xllastarg();
+
+  if (mode < 0)      { int v = 0; helperGetAUnits(&v);  mode      = v; }
+  if (precision < 0) { int v = 4; helperGetAUPrec(&v);  precision = v; }
+  if (precision < 0)  precision = 0;
+  if (precision > 16) precision = 16;
+
+  char buf[128];
+  char fmt[16];
+
+  if (mode == 1)
+  {
+    /* Degrees/minutes/seconds. Compute on the absolute value, then
+       re-attach the sign at the front. AutoCAD prints negative angles
+       without a leading minus (it normalizes to 0..360), but scripts
+       sometimes test against negative values, so we keep the sign. */
+    double deg_total = radians * 180.0 / M_PI;
+    int    sign      = (deg_total < 0) ? -1 : 1;
+    deg_total *= (double)sign;
+    int    d = (int)deg_total;
+    double rem_min = (deg_total - (double)d) * 60.0;
+    int    m = (int)rem_min;
+    double s = (rem_min - (double)m) * 60.0;
+
+    char sec_fmt[16], sec_buf[32];
+    snprintf(sec_fmt, sizeof(sec_fmt), "%%.%df", precision);
+    snprintf(sec_buf, sizeof(sec_buf), sec_fmt, s);
+
+    snprintf(buf, sizeof(buf), "%s%dd%d'%s\"",
+             sign < 0 ? "-" : "", d, m, sec_buf);
+  }
+  else if (mode == 2)
+  {
+    double grads = radians * 200.0 / M_PI;
+    snprintf(fmt, sizeof(fmt), "%%.%dfg", precision);
+    snprintf(buf, sizeof(buf), fmt, grads);
+  }
+  else if (mode == 3)
+  {
+    snprintf(fmt, sizeof(fmt), "%%.%dfr", precision);
+    snprintf(buf, sizeof(buf), fmt, radians);
+  }
+  else
+  {
+    /* Mode 0 (decimal degrees) and the fall-through for the unsupported
+       surveyor mode 4. */
+    double degrees = radians * 180.0 / M_PI;
+    snprintf(fmt, sizeof(fmt), "%%.%df", precision);
+    snprintf(buf, sizeof(buf), fmt, degrees);
+  }
+
   return cvstring(buf);
 }
 
@@ -952,6 +1098,48 @@ LVAL subGETVAR()
       return NIL;
     }
 
+    if (EqualInsensitive(name, "OSNAPCOORD")) {
+      int v = 1;
+      if (helperGetOSnapCoord(&v))
+        return cvfixnum((FIXTYPE)v);
+      return NIL;
+    }
+
+    if (EqualInsensitive(name, "ORTHOMODE")) {
+      int v = 0;
+      if (helperGetOrthoMode(&v))
+        return cvfixnum((FIXTYPE)v);
+      return NIL;
+    }
+
+    if (EqualInsensitive(name, "SNAPANG")) {
+      double v = 0.0;
+      if (helperGetSnapAng(&v))
+        return cvflonum((FLOTYPE)v);
+      return NIL;
+    }
+
+    if (EqualInsensitive(name, "VIEWTWIST")) {
+      double v = 0.0;
+      if (helperGetViewTwist(&v))
+        return cvflonum((FLOTYPE)v);
+      return NIL;
+    }
+
+    if (EqualInsensitive(name, "AUNITS")) {
+      int v = 0;
+      if (helperGetAUnits(&v))
+        return cvfixnum((FIXTYPE)v);
+      return NIL;
+    }
+
+    if (EqualInsensitive(name, "AUPREC")) {
+      int v = 4;
+      if (helperGetAUPrec(&v))
+        return cvfixnum((FIXTYPE)v);
+      return NIL;
+    }
+
     xlerror("getvar: unsupported system variable", nm);
     return NIL;
   }
@@ -959,17 +1147,26 @@ LVAL subGETVAR()
 
 /* Coerce an LVAL to int for setvar of an integer-valued variable.
    AutoLISP is forgiving: floats get truncated, integers pass through.
-   Anything else errors with a variable-named message. */
+   `var_name` is accepted for future richer diagnostics but currently
+   unused - we report a generic message and let the irritant LVAL show
+   the offending value. */
 static int SetvarIntArg(LVAL val, const char* var_name)
 {
+  (void)var_name;
   if (fixp(val))   return (int)getfixnum(val);
   if (floatp(val)) return (int)getflonum(val);
-  /* xlerror needs a single message argument; embed the var name. */
-  if (EqualInsensitive(var_name, "OSMODE"))
-    xlerror("setvar OSMODE: value must be an integer", val);
-  else
-    xlerror("setvar CMDECHO: value must be an integer", val);
+  xlerror("setvar: integer-valued variable requires a number", val);
   return 0; /* unreachable */
+}
+
+/* Coerce to double for real-valued sysvars (SNAPANG, VIEWTWIST). */
+static double SetvarRealArg(LVAL val, const char* var_name)
+{
+  (void)var_name;
+  if (fixp(val))   return (double)getfixnum(val);
+  if (floatp(val)) return (double)getflonum(val);
+  xlerror("setvar: real-valued variable requires a number", val);
+  return 0.0; /* unreachable */
 }
 
 LVAL subSETVAR()
@@ -996,6 +1193,42 @@ LVAL subSETVAR()
     if (EqualInsensitive(name, "CMDECHO")) {
       int v = SetvarIntArg(val, "CMDECHO");
       (void)helperSetEcho(v);
+      return val;
+    }
+
+    if (EqualInsensitive(name, "OSNAPCOORD")) {
+      int v = SetvarIntArg(val, "OSNAPCOORD");
+      (void)helperSetOSnapCoord(v);
+      return val;
+    }
+
+    if (EqualInsensitive(name, "ORTHOMODE")) {
+      int v = SetvarIntArg(val, "ORTHOMODE");
+      (void)helperSetOrthoMode(v);
+      return val;
+    }
+
+    if (EqualInsensitive(name, "SNAPANG")) {
+      double v = SetvarRealArg(val, "SNAPANG");
+      (void)helperSetSnapAng(v);
+      return val;
+    }
+
+    if (EqualInsensitive(name, "VIEWTWIST")) {
+      double v = SetvarRealArg(val, "VIEWTWIST");
+      (void)helperSetViewTwist(v);
+      return val;
+    }
+
+    if (EqualInsensitive(name, "AUNITS")) {
+      int v = SetvarIntArg(val, "AUNITS");
+      (void)helperSetAUnits(v);
+      return val;
+    }
+
+    if (EqualInsensitive(name, "AUPREC")) {
+      int v = SetvarIntArg(val, "AUPREC");
+      (void)helperSetAUPrec(v);
       return val;
     }
 
@@ -1388,6 +1621,7 @@ void RegisterCustomLispFunctions(void)
   xlsubr("=",         SUBR,  subEQUAL,    0);
   xlsubr("ALERT",     SUBR,  subALERT,    0);
   xlsubr("ANGLE",     SUBR,  subANGLE,    0);
+  xlsubr("ANGTOS",    SUBR,  subANGTOS,   0);
   xlsubr("ASCII",     SUBR,  subASCII,    0);
   xlsubr("ATOF",      SUBR,  subATOF,     0);
   xlsubr("ATOI",      SUBR,  subATOI,     0);
@@ -1399,6 +1633,8 @@ void RegisterCustomLispFunctions(void)
   xlsubr("ENTGET",    SUBR,  subENTGET,   0);
   xlsubr("ENTSEL",    SUBR,  subENTSEL,   0);
   xlsubr("FIX",       SUBR,  subFIX,      0);
+  xlsubr("GETANGLE",  SUBR,  subGETANGLE, 0);
+  xlsubr("GETCORNER", SUBR,  subGETCORNER,0);
   xlsubr("GETDIST",   SUBR,  subGETDIST,  0);
   xlsubr("GETINT",    SUBR,  subGETINT,   0);
   xlsubr("GETPOINT",  SUBR,  subGETPOINT, 0);

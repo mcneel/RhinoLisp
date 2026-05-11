@@ -312,6 +312,121 @@ extern "C" int helperSetEcho(int value)
   return 1;
 }
 
+// ---------------------------------------------------------------------
+// Additional shadow system variables.
+//
+// These follow the same shadow pattern as OSMODE/CMDECHO above - the
+// values round-trip through getvar/setvar but don't currently drive
+// any real Rhino state. They unblock the save-modify-restore idiom
+// that AutoLISP scripts use pervasively.
+//
+// SNAPANG and VIEWTWIST are angle quantities in radians, so they're
+// doubles. AUPREC defaults to 4 (matching the AutoCAD default precision
+// for angle formatting in ANGTOS). AUNITS defaults to 0 (decimal
+// degrees).
+// ---------------------------------------------------------------------
+static int    g_osnapcoord = 1;     /* 0=use osnaps, 1=use typed coords */
+static int    g_orthomode  = 0;     /* 0=ortho off, 1=on               */
+static double g_snapang    = 0.0;   /* snap rotation, radians          */
+static double g_viewtwist  = 0.0;   /* view twist, radians (read-ish)  */
+static int    g_aunits     = 0;     /* 0=decimal deg, 1=DMS, 2=grad...  */
+static int    g_auprec     = 4;     /* angle precision (digits)         */
+
+extern "C" int helperGetOSnapCoord(int* out_value) {
+  if (!out_value) return 0;
+  *out_value = g_osnapcoord;
+  return 1;
+}
+extern "C" int helperSetOSnapCoord(int value) {
+  g_osnapcoord = value;
+  return 1;
+}
+
+extern "C" int helperGetOrthoMode(int* out_value) {
+  if (!out_value) return 0;
+  *out_value = g_orthomode;
+  return 1;
+}
+extern "C" int helperSetOrthoMode(int value) {
+  g_orthomode = value;
+  return 1;
+}
+
+extern "C" int helperGetSnapAng(double* out_value) {
+  if (!out_value) return 0;
+  *out_value = g_snapang;
+  return 1;
+}
+extern "C" int helperSetSnapAng(double value) {
+  g_snapang = value;
+  return 1;
+}
+
+extern "C" int helperGetViewTwist(double* out_value) {
+  if (!out_value) return 0;
+  *out_value = g_viewtwist;
+  return 1;
+}
+extern "C" int helperSetViewTwist(double value) {
+  g_viewtwist = value;
+  return 1;
+}
+
+extern "C" int helperGetAUnits(int* out_value) {
+  if (!out_value) return 0;
+  *out_value = g_aunits;
+  return 1;
+}
+extern "C" int helperSetAUnits(int value) {
+  g_aunits = value;
+  return 1;
+}
+
+extern "C" int helperGetAUPrec(int* out_value) {
+  if (!out_value) return 0;
+  *out_value = g_auprec;
+  return 1;
+}
+extern "C" int helperSetAUPrec(int value) {
+  g_auprec = value;
+  return 1;
+}
+
+// ---------------------------------------------------------------------
+// (getangle [pt] [msg]) -> angle in radians, or NIL on cancel.
+//
+// CRhinoGetAngle accepts either a typed number (interpreted per the
+// document's angle-input mode) or two clicked points; in both cases
+// it returns the angle in radians. The optional base point feeds the
+// "pick a second point relative to this base" UX, matching how
+// AutoLISP's getangle works when given the optional pt argument.
+// ---------------------------------------------------------------------
+extern "C" int helperGETANGLE(const char* prompt,
+                              int has_base, double bx, double by, double bz,
+                              double* angle)
+{
+  if (nullptr == angle) return FALSE;
+  *angle = 0.0;
+
+  CRhinoGetAngle ga;
+  if (prompt && *prompt)
+  {
+    ON_wString p = prompt;
+    p.TrimLeftAndRight();
+    ga.SetCommandPrompt(p);
+  }
+  if (has_base)
+  {
+    ga.SetBase(ON_3dPoint(bx, by, bz));
+  }
+
+  if (ga.GetAngle() != CRhinoGet::angle)
+    return FALSE;
+
+  *angle = ga.Angle();
+  return TRUE;
+}
+
 extern "C" int helperIntersectLineLine(double* points, int bounded, double* outX, double* outY, double* outZ)
 {
   if (nullptr == points || nullptr == outX || nullptr == outY || nullptr == outZ)
