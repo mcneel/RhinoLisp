@@ -313,7 +313,10 @@ void MockCommands::Insert(unsigned int docId, int argc, const char* const* argv)
 
   ON_wString wName = block_name;
   int idef_idx = doc->m_instance_definition_table.FindInstanceDefinition(wName);
-  if (idef_idx < 0) return;
+  if (idef_idx < 0)
+  {
+    return;
+  }
 
   // Compose the placement transform: translate * rotate-Z * scale.
   //      The order matters - we want to scale the block first (around its

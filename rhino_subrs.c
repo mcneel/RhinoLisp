@@ -20,6 +20,7 @@
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include "XLISP-PLUS/sources/xlisp.h"
 #include "rhino_subrs.h"
 
@@ -172,6 +173,36 @@ LVAL subEQUAL(void)
     prev = next;
   }
   return s_true;
+}
+
+// ---------------------------------------------------------------------
+// AutoLISP-tolerant EQ.
+//
+// Stock XLISP eq is pointer identity, which works for symbols, numbers,
+// and same-source-position strings but not for strings that compare
+// content-equal but come from different sources (e.g. a literal "LINE"
+// in the script vs. the same string built up by entget). AutoLISP eq
+// treats those as equal, and scripts rely on it:
+//     (eq (cdr (assoc 0 ent)) "LINE")
+// We override eq so that string args fall back to content comparison,
+// while every other case keeps strict pointer-equality semantics.
+// ---------------------------------------------------------------------
+LVAL subEQ(void)
+{
+  LVAL a = xlgetarg();
+  LVAL b = xlgetarg();
+  xllastarg();
+
+  if (a == b) return s_true;
+
+  if (stringp(a) && stringp(b))
+  {
+    const char* sa = (const char*)getstring(a);
+    const char* sb = (const char*)getstring(b);
+    return strcmp(sa, sb) == 0 ? s_true : NIL;
+  }
+
+  return NIL;
 }
 
 
@@ -1629,6 +1660,7 @@ LVAL fsubWHILE(void)
 void RegisterCustomLispFunctions(void)
 {
   xlsubr("=",         SUBR,  subEQUAL,    0);
+  xlsubr("EQ",        SUBR,  subEQ,       0);
   xlsubr("ALERT",     SUBR,  subALERT,    0);
   xlsubr("ANGLE",     SUBR,  subANGLE,    0);
   xlsubr("ANGTOS",    SUBR,  subANGTOS,   0);
