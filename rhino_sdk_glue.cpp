@@ -122,6 +122,21 @@ extern "C" void RhinoAppRunScript(const char* command, int argc, const char* con
     MockCommands::Insert(g_running_script_document, argc, argv);
     return;
   }
+  if (cmd.EqualOrdinal("COLOR", true))
+  {
+    MockCommands::Color(g_running_script_document, argc, argv);
+    return;
+  }
+  if (cmd.EqualOrdinal("OFFSET", true))
+  {
+    MockCommands::Offset(g_running_script_document, argc, argv);
+    return;
+  }
+  if (cmd.EqualOrdinal("TRIM", true))
+  {
+    MockCommands::Trim(g_running_script_document, argc, argv);
+    return;
+  }
 
   // Generic fallback: stringify back into a typed-input script and let
   //      Rhino's command parser handle it. Spaces between args serve as

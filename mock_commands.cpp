@@ -73,7 +73,7 @@ static bool TryLoadBlockFromDisk(CRhinoDoc* doc, unsigned int docId,
   // Drive Rhino's -Insert via the file path. The trailing tokens accept
   // defaults at each prompt (0,0,0 / scale 1 / rotation 0).
   ON_wString cmd;
-  cmd.Format(L"_-Insert _File \"%s\" 0,0,0 1 1 0 ", file_path.Array());
+  cmd.Format(L"_-Insert _File \"%s\" Block Enter 0,0,0 1 1 ", file_path.Array());
   RhinoApp().RunScript(docId, cmd.Array(), 1);
 
   // Delete the placeholder instance(s) introduced above.
@@ -421,5 +421,323 @@ void MockCommands::Insert(unsigned int docId, int argc, const char* const* argv)
   ON_Xform xf = xfTrans * xfRot * xfScale;
 
   doc->m_instance_definition_table.AddInstanceObject(idef_idx, xf);
+  doc->Redraw();
+}
+
+// (command "COLOR" value)
+//
+// AutoCAD's COLOR command sets the current-entity color for newly-
+// created objects. AutoLISP scripts pair it with (getvar "CECOLOR"):
+//     (setq old (getvar "cecolor"))     ; remember
+//     (command "color" 1)               ; set red
+//     ... draw stuff ...
+//     (command "color" old)             ; restore
+//
+// We route both halves through the same CECOLOR shadow so the round-
+// trip is consistent. Value tokens may be a number ("1".."256"), a
+// named color ("RED", "BYLAYER", "BYBLOCK"), or anything else - we
+// just store the string. If the script later queries CECOLOR, it gets
+// back exactly what was passed in.
+//
+// Driving Rhino's actual per-object color attribute from this would
+// require translating the AutoCAD color index into an ON_Color and
+// setting doc->m_default_object_attributes.m_color, plus the matching
+// ColorSource flag. Doable as a future extension; for now the shadow
+// is enough to unblock scripts that just want the save/restore idiom.
+void MockCommands::Color(unsigned int docId, int argc, const char* const* argv)
+{
+  (void)docId;
+
+  // First non-empty token wins. Empty/Enter tokens are skipped to
+  // match AutoCAD's prompt behavior (Enter accepts the running value).
+  for (int i = 0; i < argc; ++i)
+  {
+    const char* tok = argv[i];
+    if (tok && tok[0] != '\0')
+    {
+      helperSetCEColor(tok);
+      return;
+    }
+  }
+}
+
+// (command "OFFSET" distance pt_on_source pt_on_side "")
+//
+// OFFSET prompts for a distance, then "select object" (the
+// user clicks ON the source curve), then "side to offset" (clicks the
+// side). AutoLISP scripts feed those three slots as a number and two
+// point lists.
+//
+// We translate this to the Rhino SDK directly: find the curve nearest
+// pt_on_source, call ON_Curve::Offset() with pt_on_side as the side
+// indicator and distance as the magnitude, then add the result to the
+// doc. The new curve becomes the doc's most-recent object, so
+// subsequent (entlast) in the script picks it up.
+//
+// Tolerance comes from the document settings. Curves further than a
+// few model-tolerances from pt_on_source are ignored (a click in
+// empty space shouldn't offset a random distant curve).
+void MockCommands::Offset(unsigned int docId, int argc, const char* const* argv)
+{
+  double     distance = 0.0;
+  ON_3dPoint src_pt(0.0, 0.0, 0.0);
+  ON_3dPoint side_pt(0.0, 0.0, 0.0);
+  bool       have_distance = false;
+  bool       have_src      = false;
+  bool       have_side     = false;
+
+  // Positional walk. Comma-bearing tokens are points (encoded by
+  // fsubCOMMAND as "x,y,z"); the first non-point non-empty token is
+  // the distance. Empty tokens are Enter-markers and skipped.
+  for (int i = 0; i < argc; ++i)
+  {
+    const char* tok = argv[i];
+    if (!tok || !*tok) continue;
+
+    double x, y, z;
+    if (strchr(tok, ',') && sscanf(tok, "%lf,%lf,%lf", &x, &y, &z) == 3)
+    {
+      if (!have_src)       { src_pt.Set(x, y, z);  have_src  = true; }
+      else if (!have_side) { side_pt.Set(x, y, z); have_side = true; }
+    }
+    else if (!have_distance)
+    {
+      double d;
+      if (sscanf(tok, "%lf", &d) == 1)
+      {
+        distance      = d;
+        have_distance = true;
+      }
+    }
+  }
+
+  if (!have_distance || !have_src || !have_side) return;
+
+  // AutoCAD-style: distance is magnitude, side determines direction.
+  if (distance < 0.0) distance = -distance;
+
+  CRhinoDoc* doc = CRhinoDoc::FromRuntimeSerialNumber(docId);
+  if (!doc) return;
+
+  // Find the curve nearest src_pt. ON_Curve::ClosestPoint gives us
+  // both the parameter and (via PointAt) the foot of the perpendicular;
+  // we measure that foot's distance to src_pt to score candidates.
+  const ON_Curve* src_curve = nullptr;
+  double          best_dist = 1.0e300;
+  {
+    CRhinoObjectIterator it(*doc, CRhinoObjectIterator::normal_objects);
+    for (const CRhinoObject* o = it.First(); o; o = it.Next())
+    {
+      const CRhinoCurveObject* co = CRhinoCurveObject::Cast(o);
+      if (!co) continue;
+      const ON_Curve* c = co->Curve();
+      if (!c) continue;
+      double t;
+      if (!c->GetClosestPoint(src_pt, &t)) continue;
+      ON_3dPoint foot = c->PointAt(t);
+      double     d    = foot.DistanceTo(src_pt);
+      if (d < best_dist)
+      {
+        best_dist = d;
+        src_curve = c;
+      }
+    }
+  }
+  if (!src_curve)
+    return;
+
+  // Skip if the nearest curve is implausibly far. Threshold is a few
+  // model-tolerances; the source point in AutoLISP scripts is almost
+  // always exactly on the curve (it's typically a midpoint we just
+  // computed), so even a tight bound catches the right curve.
+  double tol = doc->AbsoluteTolerance();
+  if (tol <= 0.0) tol = 0.001;
+  if (best_dist > tol * 100.0) return;
+
+  // RhinoOffsetCurve handles a wider set of curve types than the
+  // virtual ON_Curve::Offset and can yield multiple disconnected
+  // result pieces (e.g. when a polyline's offset self-intersects and
+  // needs trimming). corner_style 1 = Sharp, matching AutoCAD's
+  // default OFFSET behavior. The caller owns the returned curves and
+  // is responsible for freeing them.
+  ON_SimpleArray<ON_Curve*> offset_curves;
+  bool ok = RhinoOffsetCurve(
+      *src_curve,
+      distance,
+      side_pt,
+      ON_3dVector(0.0, 0.0, 1.0),   // XY-plane offset
+      1,                             // corner_style: Sharp
+      tol,
+      offset_curves);
+
+  if (ok)
+  {
+    for (int i = 0; i < offset_curves.Count(); ++i)
+    {
+      if (offset_curves[i])
+        doc->AddCurveObject(*offset_curves[i]);
+    }
+    doc->Redraw();
+  }
+
+  // Free regardless of success - RhinoOffsetCurve may have allocated
+  // partial results even on failure.
+  for (int i = 0; i < offset_curves.Count(); ++i)
+    delete offset_curves[i];
+}
+
+// (command "TRIM" <cutting-set> "" <trim-pt1> <trim-pt2> ... "")
+//
+// AutoCAD's TRIM flow: select cutting edges (Enter to finish), then
+// click each curve segment to trim away (Enter to finish). AutoLISP
+// scripts pass cutting edges via a selection set in slot 1; fsubCOMMAND
+// expands the set into individual ename argv tokens so we see:
+//     argv[0..k-1] = ename strings (cutting edges)
+//     argv[k]      = "" (Enter, end cutting selection)
+//     argv[k+1..n] = "x,y,z" tokens (trim points)
+//     argv[n+1]    = "" (Enter, end command)
+//
+// Per trim point we:
+//   1. Find the doc curve nearest the click.
+//   2. Intersect that target curve against every cutting edge.
+//   3. Pick the intersection parameter closest to the click's
+//      projected parameter, split the target there, and discard the
+//      half containing the click. Add the surviving half to the doc.
+//
+// This is a simplified TRIM. AutoCAD does fancier logic (ExtendLines,
+// edge-mode, projection settings) - we don't. For straightforward 2D
+// trimming where the click is on the target curve, the behavior
+// matches.
+void MockCommands::Trim(unsigned int docId, int argc, const char* const* argv)
+{
+  CRhinoDoc* doc = CRhinoDoc::FromRuntimeSerialNumber(docId);
+  if (!doc)
+    return;
+
+  // --- Phase 1: cutting edges (numeric ename tokens) ---
+  ON_SimpleArray<const ON_Curve*>          cutting_curves;
+  ON_SimpleArray<const CRhinoCurveObject*> cutting_objs;
+  int i = 0;
+  for (; i < argc; ++i)
+  {
+    const char* tok = argv[i];
+    if (!tok || !*tok)
+      break;          // "" terminates cutting-edge selection
+    long sn = atol(tok);
+    if (sn <= 0)
+      continue;
+    const CRhinoObject* obj = CRhinoObject::FromRuntimeSerialNumber(docId, (unsigned int)sn);
+    if (!obj || obj->Document() != doc)
+      continue;
+    const CRhinoCurveObject* co = CRhinoCurveObject::Cast(obj);
+    if (!co || !co->Curve())
+      continue;
+    cutting_objs.Append(co);
+    cutting_curves.Append(co->Curve());
+  }
+  if (cutting_curves.Count() == 0)
+    return;
+  if (i < argc)
+    i++;                   // skip the empty separator
+
+  // --- Phase 2: trim points (each x,y,z is a click on a target curve) ---
+  double tol = doc->AbsoluteTolerance();
+  if (tol <= 0.0)
+    tol = 0.001;
+
+  for (; i < argc; ++i)
+  {
+    const char* tok = argv[i];
+    if (!tok || !*tok)
+      break;
+
+    double tx, ty, tz;
+    if (sscanf(tok, "%lf,%lf,%lf", &tx, &ty, &tz) != 3)
+      continue;
+    ON_3dPoint trim_pt(tx, ty, tz);
+
+    // Locate the target curve: closest doc curve to the click.
+    // (Cutting-edge curves can also be trimmed - AutoCAD allows it.)
+    const CRhinoCurveObject* target_obj = nullptr;
+    double                   target_t   = 0.0;
+    double                   best_dist  = 1.0e300;
+    {
+      CRhinoObjectIterator it(*doc, CRhinoObjectIterator::normal_objects);
+      for (const CRhinoObject* o = it.First(); o; o = it.Next())
+      {
+        const CRhinoCurveObject* co = CRhinoCurveObject::Cast(o);
+        const ON_Curve* c = co ? co->Curve() : nullptr;
+        if (nullptr == c)
+          continue;
+        double t;
+        if (!c->GetClosestPoint(trim_pt, &t))
+          continue;
+        double d = c->PointAt(t).DistanceTo(trim_pt);
+        if (d < best_dist)
+        {
+          best_dist  = d;
+          target_obj = co;
+          target_t   = t;
+        }
+      }
+    }
+    if (!target_obj)
+      continue;
+    const ON_Curve* target = target_obj->Curve();
+
+    // Find every parameter on `target` where it intersects a cutting
+    // edge. Skip intersections with itself.
+    ON_SimpleArray<double> cut_params;
+    for (int j = 0; j < cutting_curves.Count(); ++j)
+    {
+      const ON_Curve* cut = cutting_curves[j];
+      if (cut == target)
+        continue;
+      ON_SimpleArray<ON_X_EVENT> events;
+      if (target->IntersectCurve(cut, events, tol) < 1)
+        continue;
+      for (int k = 0; k < events.Count(); ++k)
+        cut_params.Append(events[k].m_a[0]);
+    }
+    if (cut_params.Count() == 0)
+      continue;
+
+    // Pick the intersection parameter closest to the click.
+    double cut_t   = cut_params[0];
+    double cut_diff = fabs(cut_t - target_t);
+    for (int j = 1; j < cut_params.Count(); ++j)
+    {
+      double d = fabs(cut_params[j] - target_t);
+      if (d < cut_diff)
+      {
+        cut_diff = d;
+        cut_t    = cut_params[j];
+      }
+    }
+
+    // Split the target at the intersection and discard the side
+    // containing the click.
+    ON_Curve* part_before = nullptr;
+    ON_Curve* part_after  = nullptr;
+    if (!target->Split(cut_t, part_before, part_after))
+    {
+      delete part_before;
+      delete part_after;
+      continue;
+    }
+
+    ON_Curve* keep    = nullptr;
+    ON_Curve* discard = nullptr;
+    if (target_t < cut_t) { discard = part_before; keep = part_after;  }
+    else                  { discard = part_after;  keep = part_before; }
+
+    if (keep) doc->AddCurveObject(*keep);
+    delete keep;
+    delete discard;
+
+    // Remove the original target.
+    doc->DeleteObject(CRhinoObjRef(target_obj));
+  }
+
   doc->Redraw();
 }

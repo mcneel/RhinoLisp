@@ -423,6 +423,121 @@ LVAL subENTLAST(void)
 LVAL subTEXTSCR(void)  { xllastarg(); return NIL; }
 LVAL subGRAPHSCR(void) { xllastarg(); return NIL; }
 
+// ---------------------------------------------------------------------
+// Selection sets (ssadd, sslength, ssname, ssmemb).
+//
+// Real AutoLISP exposes selection sets as an opaque mutable type.
+// Scripts rely on the mutation: (ssadd ename set) updates `set` in
+// place without needing to wrap the call in setq. Our representation
+// is a cons whose head is a sentinel symbol *ssset* and whose cdr is
+// the list of entity names. The sentinel cell gives ssadd a stable
+// target for rplacd so callers see their set grow even when it
+// started empty.
+// ---------------------------------------------------------------------
+static LVAL SSSentinelSym(void)
+{
+  // xlenter interns the symbol on first call, then returns the same
+  // LVAL on every subsequent call - so identity comparison works.
+  return xlenter("*SSSET*");
+}
+
+static int SSIsSelectionSet(LVAL v)
+{
+  return consp(v) && (car(v) == SSSentinelSym());
+}
+
+// (ssadd)                  -> fresh empty set
+// (ssadd ename)            -> fresh set containing ename
+// (ssadd ename set)        -> mutate set to include ename; return set
+LVAL subSSADD(void)
+{
+  if (!moreargs())
+  {
+    // Empty set: just the sentinel cell.
+    LVAL r;
+    xlsave1(r);
+    r = cons(SSSentinelSym(), NIL);
+    xlpop();
+    return r;
+  }
+
+  LVAL ename = xlgetarg();
+
+  if (!moreargs())
+  {
+    // New singleton set.
+    LVAL r, c;
+    xlstkcheck(2);
+    xlprotect(r); xlprotect(c);
+    c = cons(ename, NIL);
+    r = cons(SSSentinelSym(), c);
+    xlpopn(2);
+    return r;
+  }
+
+  // Mutating form: (ssadd ename set)
+  LVAL set = xlgetarg();
+  xllastarg();
+
+  if (!SSIsSelectionSet(set))
+    xlerror("ssadd: not a selection set", set);
+
+  // Prepend ename onto the set's payload. The sentinel cell stays
+  // identity-stable, so the caller's binding still points at the
+  // updated set.
+  LVAL new_cell;
+  xlsave1(new_cell);
+  new_cell = cons(ename, cdr(set));
+  rplacd(set, new_cell);
+  xlpop();
+  return set;
+}
+
+// (sslength set) -> count of entities in the set
+LVAL subSSLENGTH(void)
+{
+  LVAL set = xlgetarg();
+  xllastarg();
+  if (!SSIsSelectionSet(set))
+    return cvfixnum((FIXTYPE)0);
+  long n = 0;
+  for (LVAL p = cdr(set); consp(p); p = cdr(p))
+    ++n;
+  return cvfixnum((FIXTYPE)n);
+}
+
+// (ssname set index) -> ename at position `index`, NIL out of range
+LVAL subSSNAME(void)
+{
+  LVAL set = xlgetarg();
+  LVAL idx = xlgetarg();
+  xllastarg();
+  if (!SSIsSelectionSet(set) || !fixp(idx))
+    return NIL;
+  long i = (long)getfixnum(idx);
+  if (i < 0) return NIL;
+  for (LVAL p = cdr(set); consp(p); p = cdr(p))
+  {
+    if (i == 0) return car(p);
+    --i;
+  }
+  return NIL;
+}
+
+// (ssmemb ename set) -> ename if present in set, else NIL
+LVAL subSSMEMB(void)
+{
+  LVAL ename = xlgetarg();
+  LVAL set   = xlgetarg();
+  xllastarg();
+  if (!SSIsSelectionSet(set)) return NIL;
+  for (LVAL p = cdr(set); consp(p); p = cdr(p))
+  {
+    if (eql(car(p), ename)) return ename;
+  }
+  return NIL;
+}
+
 LVAL subENTGET(void)
 {
   LVAL arg = xlgetarg();
@@ -1405,6 +1520,24 @@ LVAL fsubCOMMAND(void)
     }
     else if (consp(v))
     {
+      // Selection sets are tagged cons cells: (*SSSET* ename1 ename2 ...).
+      // AutoLISP's (command "...") naturally expands a selection set
+      // into its members so the receiving command sees each entity as
+      // a separate input. Mirror that: emit one argv token per ename
+      // and skip the standard single-arg dispatch below.
+      if (car(v) == SSSentinelSym())
+      {
+        for (LVAL p = cdr(v); consp(p) && argc < kMaxArgs; p = cdr(p))
+        {
+          LVAL e = car(p);
+          if (!fixp(e)) continue;
+          char* sd = arg_buf[argc];
+          snprintf(sd, kArgBufSize, "%ld", (long)getfixnum(e));
+          argv[argc++] = sd;
+        }
+        continue;   // don't fall through; the set has been unrolled
+      }
+
       double x, y, z;
       if (!ParsePointList(v, &x, &y, &z))
         continue;
@@ -1695,6 +1828,10 @@ void RegisterCustomLispFunctions(void)
   xlsubr("SETVAR",    SUBR,  subSETVAR,   0);
   xlsubr("STRCASE",   SUBR,  subSTRCASE,  0);
   xlsubr("STRCAT",    SUBR,  subSTRCAT,   0);
+  xlsubr("SSADD",     SUBR,  subSSADD,    0);
+  xlsubr("SSLENGTH",  SUBR,  subSSLENGTH, 0);
+  xlsubr("SSMEMB",    SUBR,  subSSMEMB,   0);
+  xlsubr("SSNAME",    SUBR,  subSSNAME,   0);
   xlsubr("STRLEN",    SUBR,  subSTRLEN,   0);
   xlsubr("SUBSTR",    SUBR,  subSUBSTR,   0);
   xlsubr("TEXTSCR",   SUBR,  subTEXTSCR,  0);
