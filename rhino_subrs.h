@@ -6,7 +6,7 @@ extern "C" {
   void RegisterCustomLispFunctions(void);
   void RhinoAppPrint(const char* msg);
   void SetRunningScriptDocument(unsigned int docId);
-  void RhinoAppRunScript(const char* command, const char* args);
+  void RhinoAppRunScript(const char* command, int argc, const char* const* argv);
 
   int helperGETDIST(const char* prompt, int has_base, double bx, double by, double bz,
     double* distance);
@@ -50,9 +50,6 @@ extern "C" {
 
   int helperIntersectLineLine(double* points, int bounded, double* outX, double* outY, double* outZ);
 
-  int rhino_glue_make_layer(const char* name, const char* color);
-  int rhino_glue_set_current_layer(const char* name);
-  int rhino_glue_add_line(double x1, double y1, double z1, double x2, double y2, double z2);
 
   /* ---- entity selection / inspection ---------------------------------- */
 

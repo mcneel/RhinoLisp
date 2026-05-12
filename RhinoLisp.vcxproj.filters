@@ -123,6 +123,9 @@
     <ClCompile Include="rhino_subrs.c">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="mock_commands.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="RhinoLispApp.h">
@@ -159,6 +162,9 @@
       <Filter>XLISP-PLUS</Filter>
     </ClInclude>
     <ClInclude Include="rhino_subrs.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="mock_commands.h">
       <Filter>Header Files</Filter>
     </ClInclude>
   </ItemGroup>

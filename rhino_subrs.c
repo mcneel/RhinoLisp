@@ -1238,199 +1238,116 @@ LVAL subSETVAR()
 }
 
 /* --------------------------------------------------------------------- */
-/* (command ...) - minimal AutoLISP emulator (LAYER and LINE only).      */
+/* (command ...) - dispatch a Rhino command from AutoLISP.               */
 /*                                                                       */
-/* This is an FSUBR: arguments arrive UNEVALUATED so we can let the      */
-/* user's keyboard-style strings come through as bare symbols. We        */
-/* explicitly evaluate each arg before consuming it.                     */
+/* This is an FSUBR: arguments arrive UNEVALUATED so the COMMAND form    */
+/* can accept keyboard-shaped input (bare symbols, strings, numbers,     */
+/* point lists). We explicitly evaluate each arg, stringify it according */
+/* to its type, then hand the command name and an argv-shaped array to   */
+/* RhinoAppRunScript. The Rhino-side glue is responsible for deciding    */
+/* whether a given command (LAYER, LINE, ...) gets special handling or   */
+/* falls through to RhinoApp().RunScript() as a typed-input script.      */
 /*                                                                       */
-/*   (command "LAYER" "M" name "C" color "" "")                          */
-/*       Make and switch to layer `name`; set its color to `color`.     */
-/*       Trailing empty strings are AutoCAD's way of accepting the       */
-/*       LAYER prompt. We just stop reading once we see them.            */
-/*                                                                       */
-/*   (command "LINE" pt pt pt ... ["c"|""])                              */
-/*       Draw connected line segments through the points. "c" closes    */
-/*       the figure; empty string just terminates input.                 */
+/* Type-to-string conventions, mirroring what AutoCAD's command parser   */
+/* would see from the equivalent typed input:                            */
+/*   string      -> as-is (empty string survives, meaning "Enter")       */
+/*   symbol      -> print-name                                           */
+/*   fixnum      -> %ld                                                  */
+/*   flonum      -> %.17g (round-trip precision)                         */
+/*   point list  -> "x,y,z" with %.17g per coord                         */
+/*   NIL / other -> skipped                                              */
 /* --------------------------------------------------------------------- */
-
-#define MAX_LINE_POINTS 256
-
-static int eval_string_arg(LVAL form, char* buf, int buf_cap)
-{
-  LVAL v = xleval(form);
-  if (!stringp(v)) return 0;
-  {
-    const char* s = (const char*)getstring(v);
-    int n;
-    for (n = 0; n < buf_cap - 1 && s[n]; ++n) buf[n] = s[n];
-    buf[n] = '\0';
-  }
-  return 1;
-}
 
 LVAL fsubCOMMAND(void)
 {
-  /* xlargv/xlargc point at the unevaluated arg list for an FSUBR. */
-  char first[64];
-
   if (xlargc < 1)
   {
     xllastarg();
     return NIL;
   }
 
-  if (!eval_string_arg(xlargv[0], first, (int)sizeof(first)))
-    xlerror("command: first argument must evaluate to a string",
-      xlargv[0]);
+  /* Evaluate the command name. Must be a string. */
+  LVAL cmd_val = xleval(xlargv[0]);
+  if (!stringp(cmd_val))
+    xlerror("command: first argument must evaluate to a string", xlargv[0]);
+  const char* cmd = (const char*)getstring(cmd_val);
 
-  /* ---- LAYER ----------------------------------------------------- */
-  if (EqualInsensitive(first, "LAYER"))
+  /* Build a flat argv from the remaining args. Sized for typical
+     AutoLISP COMMAND usage (rarely more than ~20 args, ~50 bytes each
+     since point strings dominate). */
+  enum { kMaxArgs = 64, kArgBufSize = 256 };
+  static char arg_buf[kMaxArgs][kArgBufSize];
+  const char* argv[kMaxArgs];
+  int argc = 0;
+
+  for (int i = 1; i < xlargc && argc < kMaxArgs; ++i)
   {
-    char layer_name[256] = "";
-    char color[64] = "";
-    char tok[256];
+    LVAL form = xlargv[i];
+    char* dst = arg_buf[argc];
+    dst[0] = '\0';
 
-    for (int i = 1; i < xlargc; ++i)
+    /* AutoLISP COMMAND is a typing macro - bare unbound symbols come
+       through as if typed at the prompt, not as variable lookups. A
+       stray (command ... C) on the end of a LINE call is meant to be
+       the "close" keyword, not a reference to a variable named C.
+       Catch that before xleval blows up on the missing binding. */
+    if (symbolp(form) && !boundp(form))
     {
-      if (!eval_string_arg(xlargv[i], tok, (int)sizeof(tok))) {
-        xlerror("command LAYER: expected string arg", xlargv[i]);
-      }
-      if (tok[0] == '\0') continue;            /* empty = "Enter" */
-      if (EqualInsensitive(tok, "M") || EqualInsensitive(tok, "MAKE")) {
-        if (++i >= xlargc) break;
-        eval_string_arg(xlargv[i], layer_name, (int)sizeof(layer_name));
-      }
-      else if (EqualInsensitive(tok, "C") || EqualInsensitive(tok, "COLOR")) {
-        if (++i >= xlargc) break;
-        eval_string_arg(xlargv[i], color, (int)sizeof(color));
-        /* AutoCAD then prompts for which layers; eat the next
-           non-empty token (the layer name to apply color to).  */
-        if (i + 1 < xlargc)
-        {
-          char tgt[256];
-          if (eval_string_arg(xlargv[i + 1], tgt, (int)sizeof(tgt)) && tgt[0] != '\0')
-          {
-            i++;
-            if (layer_name[0] == '\0')
-            {
-              int k;
-              for (k = 0; k < (int)sizeof(layer_name) - 1 && tgt[k]; ++k)
-                layer_name[k] = tgt[k];
-              layer_name[k] = '\0';
-            }
-          }
-        }
-      }
-      else if (EqualInsensitive(tok, "S") || EqualInsensitive(tok, "SET"))
-      {
-        if (++i >= xlargc)
-          break;
-        eval_string_arg(xlargv[i], layer_name, (int)sizeof(layer_name));
-      }
-      else if (EqualInsensitive(tok, "ON") || EqualInsensitive(tok, "OFF") ||
-        EqualInsensitive(tok, "F") || EqualInsensitive(tok, "T") ||
-        EqualInsensitive(tok, "L") || EqualInsensitive(tok, "U") ||
-        EqualInsensitive(tok, "P") || EqualInsensitive(tok, "?"))
-      {
-        /* Subcommands we don't implement - skip the next arg. */
-        if (++i >= xlargc)
-          break;
-      }
-      /* anything else: ignore (AutoCAD would re-prompt)         */
+      const char* s = (const char*)getstring(getpname(form));
+      int n;
+      for (n = 0; n < kArgBufSize - 1 && s[n]; ++n) dst[n] = s[n];
+      dst[n] = '\0';
+      argv[argc++] = dst;
+      continue;
     }
 
-    if (layer_name[0] == '\0')
-      return NIL;
+    LVAL v = xleval(form);
 
-    if (!rhino_glue_make_layer(layer_name, color))
-      return NIL;
-    if (!rhino_glue_set_current_layer(layer_name))
-      return NIL;
-    return s_true;
-  }
-
-  /* ---- LINE ------------------------------------------------------ */
-  if (EqualInsensitive(first, "LINE"))
-  {
-    double pts[MAX_LINE_POINTS][3];
-    int    npts = 0;
-    int    closed = 0;
-
-    for (int i = 1; i < xlargc; ++i)
+    if (null(v))
     {
-      LVAL v = xleval(xlargv[i]);
-
-      if (consp(v))
-      {
-        double x, y, z;
-        if (npts >= MAX_LINE_POINTS)
-          xlfail("command LINE: too many points");
-        if (!ParsePointList(v, &x, &y, &z))
-          xlerror("command LINE: malformed point", v);
-        pts[npts][0] = x; pts[npts][1] = y; pts[npts][2] = z;
-        ++npts;
-      }
-      else if (stringp(v))
-      {
-        const char* s = (const char*)getstring(v);
-        if (s[0] == '\0') {
-          /* "Enter" - end the LINE command */
-          break;
-        }
-        if (EqualInsensitive(s, "C") || EqualInsensitive(s, "CLOSE")) {
-          closed = 1;
-          break;
-        }
-        /* unknown subcommand: ignore */
-      }
-      else
-      {
-        xlerror("command LINE: expected point or string", v);
-      }
+      /* skip NIL - real AutoLISP errors here; we degrade quietly. */
+      continue;
     }
-
-    if (npts < 2)
-      return NIL;
-
-    for (int i = 0; i + 1 < npts; ++i)
+    else if (consp(v))
     {
-      rhino_glue_add_line(pts[i][0], pts[i][1], pts[i][2], pts[i + 1][0], pts[i + 1][1], pts[i + 1][2]);
-    }
-
-    if (closed && npts >= 3)
-    {
-      rhino_glue_add_line(pts[npts - 1][0], pts[npts - 1][1], pts[npts - 1][2], pts[0][0], pts[0][1], pts[0][2]);
-    }
-    return s_true;
-  }
-
-  // Just pass along as a scripted command and hope it works
-  {
-    char tok[256];
-    char args[512];
-    args[0] = 0;
-    int argsIndex = 0;
-    for (int i = 1; i < xlargc; i++)
-    {
-      if (!eval_string_arg(xlargv[i], tok, (int)sizeof(tok)) || tok[0] == '\0')
-      {
+      double x, y, z;
+      if (!ParsePointList(v, &x, &y, &z))
         continue;
-      }
-      for (int j = 0; j < (int)sizeof(tok) && argsIndex < ((int)sizeof(args)-1); j++)
-      {
-        if (tok[j] == 0)
-          break;
-
-        args[argsIndex++] = tok[j];
-      }
-      if (argsIndex < ((int)sizeof(args) - 1))
-        args[argsIndex++] = ' ';
-      if (argsIndex < ((int)sizeof(args) - 1))
-        args[argsIndex] = 0;
+      snprintf(dst, kArgBufSize, "%.17g,%.17g,%.17g", x, y, z);
     }
-    RhinoAppRunScript(first, args);
+    else if (stringp(v))
+    {
+      const char* s = (const char*)getstring(v);
+      int n;
+      for (n = 0; n < kArgBufSize - 1 && s[n]; ++n) dst[n] = s[n];
+      dst[n] = '\0';
+    }
+    else if (symbolp(v))
+    {
+      const char* s = (const char*)getstring(getpname(v));
+      int n;
+      for (n = 0; n < kArgBufSize - 1 && s[n]; ++n) dst[n] = s[n];
+      dst[n] = '\0';
+    }
+    else if (fixp(v))
+    {
+      snprintf(dst, kArgBufSize, "%ld", (long)getfixnum(v));
+    }
+    else if (floatp(v))
+    {
+      snprintf(dst, kArgBufSize, "%.17g", (double)getflonum(v));
+    }
+    else
+    {
+      /* anything else: skip */
+      continue;
+    }
+
+    argv[argc] = dst;
+    ++argc;
   }
+
+  RhinoAppRunScript(cmd, argc, argv);
   return s_true;
 }
 

@@ -111,11 +111,20 @@ static std::string PreprocessAutoLisp(const std::string& src, ON_ClassArray<ON_S
                        prev == '`' || prev == ',');
 
     if (atSymStart && (c == 'c' || c == 'C') &&
-            i + 2 < n && src[i + 1] == ':' &&
-            isSymStartFollow(src[i + 2]))
+            i + 2 < n && src[i + 1] == ':')
     {
-      // Skip the "c:" - the rest of the symbol falls through.
-      i += 2;
+      // Peek past any whitespace between the colon and the symbol.
+      // Some AutoLISP authors write "(defun c: NAME ...)" with a space,
+      // which the strict spec doesn't allow but is common enough in the
+      // wild that we accommodate it.
+      i = i + 2;
+      c = src[i];
+      while (c == ' ' && (i+1) < n)
+      {
+        i++;
+        c = src[i];
+      }
+
       // `prev` deliberately stays as it was; the next char now
       // becomes the first char of the symbol.
       state = DEFINING_COMMAND;

@@ -8,6 +8,7 @@
 #include "stdafx.h"
 #include "rhino_subrs.h"
 #include <string>
+#include "mock_commands.h"
 
 #undef max
 
@@ -20,44 +21,6 @@ static void CopyToString(char* dst, int cap, const char* src)
     int length = std::max(ON_String::Length(src), cap - 1);
     memcpy(dst, src, length);
   }
-}
-
-// Map a named color to an ON_Color
-static bool ColorFromString(const char* text, ON_Color& out)
-{
-  struct { const char* name; unsigned r, g, b; } table[] = {
-      { "RED",     255,   0,   0 },
-      { "YELLOW",  255, 255,   0 },
-      { "GREEN",     0, 255,   0 },
-      { "CYAN",      0, 255, 255 },
-      { "BLUE",      0,   0, 255 },
-      { "MAGENTA", 255,   0, 255 },
-      { "WHITE",   255, 255, 255 },
-      { "BLACK",     0,   0,   0 },
-      { "GRAY",    128, 128, 128 },
-      { "GREY",    128, 128, 128 },
-      { "1",       255,   0,   0 },
-      { "2",       255, 255,   0 },
-      { "3",         0, 255,   0 },
-      { "4",         0, 255, 255 },
-      { "5",         0,   0, 255 },
-      { "6",       255,   0, 255 },
-      { "7",       255, 255, 255 }
-  };
-  if (nullptr==text)
-    return false;
-
-  ON_String colorName = text;
-  for (size_t i = 0; i < sizeof(table); i++)
-  {
-    if (colorName.EqualOrdinal(table[i].name, true))
-    {
-      out.SetRGB((int)table[i].r, (int)table[i].g, (int)table[i].b);
-      return true;
-    }
-  }
-
-  return false;
 }
 
 // Attempt to convert an ON_Color to an acad color index for the standard 7
@@ -83,15 +46,65 @@ extern "C" void SetRunningScriptDocument(unsigned int docId)
   g_running_script_document = docId;
 }
 
-extern "C" void RhinoAppRunScript(const char* command, const char* args)
+// ---------------------------------------------------------------------
+// RhinoAppRunScript: dispatch a Rhino command on behalf of (command ...).
+//
+// Arguments arrive pre-stringified from fsubCOMMAND. Points come in as
+// "x,y,z" (commas, no spaces), strings/keywords/numbers come as their
+// natural text form, empty-string args survive as "Enter" markers.
+//
+// A handful of common verbs (LAYER, LINE, ...) are dispatched to the
+// MockCommands class, which translates the argv stream directly into
+// SDK calls. Everything else gets concatenated into a typed-input
+// script and handed to RhinoApp().RunScript().
+// ---------------------------------------------------------------------
+namespace
 {
-  ON_wString s = command;
-  if (args && args[0] != 0)
+  bool EqIgnoreCase(const char* a, const char* b)
   {
-    s += L" ";
-    s += args;
+    if (!a || !b) return false;
+    while (*a && *b)
+    {
+      char ca = *a, cb = *b;
+      if (ca >= 'a' && ca <= 'z') ca = (char)(ca - 32);
+      if (cb >= 'a' && cb <= 'z') cb = (char)(cb - 32);
+      if (ca != cb) return false;
+      ++a; ++b;
+    }
+    return *a == 0 && *b == 0;
   }
-  RhinoApp().RunScript(g_running_script_document, s.Array());
+} // namespace
+
+extern "C" void RhinoAppRunScript(const char* command, int argc, const char* const* argv)
+{
+  ON_String cmd = command;
+  if (cmd.IsEmpty())
+    return;
+
+  if (cmd.EqualOrdinal("LAYER", true))
+  {
+    MockCommands::Layer(g_running_script_document, argc, argv);
+    return;
+  }
+  if (cmd.EqualOrdinal("LINE", true))
+  {
+    MockCommands::Line(g_running_script_document, argc, argv);
+    return;
+  }
+
+  /* Generic fallback: stringify back into a typed-input script and let
+     Rhino's command parser handle it. Spaces between args serve as
+     Enter; an empty arg contributes nothing of its own but its leading
+     space still hits Rhino as an Enter, which matches AutoLISP's
+     empty-string-as-Enter idiom. */
+  ON_wString script = command;
+  for (int i = 0; i < argc; ++i)
+  {
+    script += L" ";
+    if (argv[i] && argv[i][0])
+      script += argv[i];
+  }
+  RhinoApp().RunScript(g_running_script_document, script.Array());
 }
 
 extern "C" void RhinoAppPrint(const char* msg)
@@ -446,65 +459,6 @@ extern "C" int helperIntersectLineLine(double* points, int bounded, double* outX
   *outY = rc.y;
   *outZ = rc.z;
   return TRUE;
-}
-
-
-// Helper used by (command "LAYER" "M" name "C" color ...).
-// Creates the layer (or finds it), optionally sets its color.
-extern "C" int rhino_glue_make_layer(const char* name, const char* color)
-{
-  if (!name || !*name) return 0;
-
-  CRhinoDoc* doc = CRhinoDoc::FromRuntimeSerialNumber(g_running_script_document);
-  if (!doc) return 0;
-
-  ON_String aName(name);
-  ON_wString wName(aName);
-
-  int idx = doc->m_layer_table.FindLayerFromName(wName, true, true, -1, -2);
-  if (idx < 0) {
-    ON_Layer layer;
-    layer.SetName(wName);
-    if (color && *color) {
-      ON_Color c;
-      if (ColorFromString(color, c))
-        layer.SetColor(c);
-    }
-    idx = doc->m_layer_table.AddLayer(layer);
-    return idx >= 0 ? 1 : 0;
-  }
-
-  // Existing layer - update the color if one was specified.
-  if (color && *color) {
-    ON_Color c;
-    if (ColorFromString(color, c)) {
-      ON_Layer mod = doc->m_layer_table[idx];
-      mod.SetColor(c);
-      doc->m_layer_table.ModifyLayer(mod, idx);
-    }
-  }
-  return 1;
-}
-
-extern "C" int rhino_glue_set_current_layer(const char* name)
-{
-  return rhino_glue_setvar_clayer(name);
-}
-
-// Add a single line segment to the doc on the current layer.
-extern "C" int rhino_glue_add_line(double x1, double y1, double z1, double x2, double y2, double z2)
-{
-  CRhinoDoc* doc = CRhinoDoc::FromRuntimeSerialNumber(g_running_script_document);
-  if (!doc)
-    return 0;
-
-  ON_Line line(ON_3dPoint(x1, y1, z1), ON_3dPoint(x2, y2, z2));
-  CRhinoCurveObject* obj = doc->AddCurveObject(line);
-  if (!obj)
-    return 0;
-
-  doc->Redraw();
-  return 1;
 }
 
 extern "C" int helperGETSTRING(const char* prompt, int allow_spaces, char* out, int out_cap)

@@ -12,6 +12,7 @@
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="cmdRhinoLisp.cpp" />
+    <ClCompile Include="mock_commands.cpp" />
     <ClCompile Include="RhinoLispApp.cpp" />
     <ClCompile Include="RhinoLispPlugIn.cpp" />
     <ClCompile Include="rhino_sdk_glue.cpp" />
@@ -271,6 +272,7 @@
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="mock_commands.h" />
     <ClInclude Include="RhinoLispApp.h" />
     <ClInclude Include="RhinoLispPlugIn.h" />
     <ClInclude Include="Resource.h" />
