@@ -91,6 +91,11 @@ extern "C" void RhinoAppRunScript(const char* command, int argc, const char* con
     MockCommands::Line(g_running_script_document, argc, argv);
     return;
   }
+  if (cmd.EqualOrdinal("INSERT", true))
+  {
+    MockCommands::Insert(g_running_script_document, argc, argv);
+    return;
+  }
 
   /* Generic fallback: stringify back into a typed-input script and let
      Rhino's command parser handle it. Spaces between args serve as
@@ -115,6 +120,14 @@ extern "C" void RhinoAppPrint(const char* msg)
   // Throw a newline in if the input was empty or didn't end in a newline
   if (s.Length() == 0 || s[s.Length() - 1] != L'\n')
     RhinoApp().Print(L"\n");
+}
+
+extern "C" void RhinoAppPrintRaw(const char* msg)
+{
+  ON_wString s = msg;
+  if (s.IsEmpty())
+    return;
+  RhinoApp().Print(s.Array());
 }
 
 extern "C" void helperALERT(const char* msg)
@@ -405,6 +418,54 @@ extern "C" int helperSetAUPrec(int value) {
   return 1;
 }
 
+// CECOLOR - current-entity color, AutoCAD-style. Shadowed: scripts can
+// save/restore it but it doesn't actually drive Rhino's new-object
+// color attribute today. Default is the AutoCAD convention "BYLAYER".
+static char g_cecolor[64] = "BYLAYER";
+
+extern "C" int helperGetCEColor(char* out, int out_cap)
+{
+  if (!out || out_cap <= 0) return 0;
+  int n = 0;
+  for (; n < out_cap - 1 && g_cecolor[n]; ++n) out[n] = g_cecolor[n];
+  out[n] = '\0';
+  return 1;
+}
+
+extern "C" int helperSetCEColor(const char* value)
+{
+  if (!value) return 0;
+  int n = 0;
+  for (; n < (int)sizeof(g_cecolor) - 1 && value[n]; ++n) g_cecolor[n] = value[n];
+  g_cecolor[n] = '\0';
+  return 1;
+}
+
+// (entlast) - report the most-recently-added object in the doc by
+// walking the iterator and picking the highest runtime serial number.
+// AutoLISP's entlast is "the last object added during this session";
+// in Rhino, runtime serial numbers are monotonically increasing within
+// a session and not reused, so picking the max gives us the same
+// semantics. O(n) on object count but n is small in typical scripts.
+extern "C" int helperEntLast(unsigned int* out_serial)
+{
+  if (!out_serial) return 0;
+  *out_serial = 0;
+
+  CRhinoDoc* doc = CRhinoDoc::FromRuntimeSerialNumber(g_running_script_document);
+  if (!doc) return 0;
+
+  unsigned int max_sn = 0;
+  CRhinoObjectIterator it(*doc, CRhinoObjectIterator::normal_objects);
+  for (const CRhinoObject* obj = it.First(); obj; obj = it.Next())
+  {
+    unsigned int sn = obj->RuntimeSerialNumber();
+    if (sn > max_sn) max_sn = sn;
+  }
+  *out_serial = max_sn;
+  return max_sn != 0 ? 1 : 0;
+}
+
 // ---------------------------------------------------------------------
 // (getangle [pt] [msg]) -> angle in radians, or NIL on cancel.
 //
@@ -584,6 +645,43 @@ static void fill_geometry_props(const ON_Geometry* geom, RhinoEntityProps* out)
     out->pt10[0]  = pt->point.x;
     out->pt10[1]  = pt->point.y;
     out->pt10[2]  = pt->point.z;
+    return;
+  }
+
+  // Block reference (INSERT in DXF parlance). The xform encodes
+  // position + rotation + scale in a single 4x4. We decompose it
+  // into the AutoLISP-shaped group codes:
+  //   10  -> translation (column 3)
+  //   41/42/43 -> column-vector magnitudes (X/Y/Z scale factors)
+  //   50  -> rotation about Z, recovered from atan2 of the
+  //          x-axis column's xy components
+  if (const ON_InstanceRef* iref = ON_InstanceRef::Cast(geom))
+  {
+    CopyToString(out->type, sizeof(out->type), "INSERT");
+    const ON_Xform& xf = iref->m_xform;
+
+    out->has_pt10 = 1;
+    out->pt10[0]  = xf[0][3];
+    out->pt10[1]  = xf[1][3];
+    out->pt10[2]  = xf[2][3];
+
+    double sx = sqrt(xf[0][0]*xf[0][0] + xf[1][0]*xf[1][0] + xf[2][0]*xf[2][0]);
+    double sy = sqrt(xf[0][1]*xf[0][1] + xf[1][1]*xf[1][1] + xf[2][1]*xf[2][1]);
+    double sz = sqrt(xf[0][2]*xf[0][2] + xf[1][2]*xf[1][2] + xf[2][2]*xf[2][2]);
+    out->has_scale = 1;
+    out->scale[0]  = sx;
+    out->scale[1]  = sy;
+    out->scale[2]  = sz;
+
+    /* Rotation about Z: angle of the (normalized) x-axis column in
+       the XY plane. AutoLISP convention is radians in [0, 2*pi),
+       same as for the existing ARC group-50. */
+    double ax = (sx != 0.0) ? xf[0][0] / sx : xf[0][0];
+    double ay = (sx != 0.0) ? xf[1][0] / sx : xf[1][0];
+    double rot = atan2(ay, ax);
+    if (rot < 0.0) rot += 2.0 * 3.14159265358979323846;
+    out->has_angle = 1;
+    out->angle     = rot;
     return;
   }
 

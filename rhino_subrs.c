@@ -363,6 +363,30 @@ LVAL subENTSEL(void)
 // Returns NIL if the runtime serial number doesn't resolve to a live
 // object in the active document.
 // ---------------------------------------------------------------------
+// ---------------------------------------------------------------------
+// (entlast) -> ename of the most-recently-added object, or NIL if the
+// document is empty. AutoLISP convention: scripts call this right
+// after (command "<verb>" ...) to grab whatever the command just
+// produced, so the runtime serial number returned must be valid for
+// subsequent (entget ...) calls.
+// ---------------------------------------------------------------------
+LVAL subENTLAST(void)
+{
+  xllastarg();
+  unsigned int sn = 0;
+  if (!helperEntLast(&sn) || sn == 0)
+    return NIL;
+  return cvfixnum((FIXTYPE)sn);
+}
+
+// ---------------------------------------------------------------------
+// (textscr) / (graphscr) - legacy screen-mode toggles for the
+// pre-graphical-IDE era. Both no-op silently in Rhino, returning NIL,
+// so scripts that call them at startup/shutdown don't abort.
+// ---------------------------------------------------------------------
+LVAL subTEXTSCR(void)  { xllastarg(); return NIL; }
+LVAL subGRAPHSCR(void) { xllastarg(); return NIL; }
+
 LVAL subENTGET(void)
 {
   LVAL arg = xlgetarg();
@@ -385,6 +409,9 @@ LVAL subENTGET(void)
 
   // Build in reverse: last prepend ends up at the head. We want type
   // first because (cdr (assoc 0 e)) is by far the most common probe.
+  if (p.has_scale)  result = EntPushFlonumPair(result, 43, p.scale[2]);
+  if (p.has_scale)  result = EntPushFlonumPair(result, 42, p.scale[1]);
+  if (p.has_scale)  result = EntPushFlonumPair(result, 41, p.scale[0]);
   if (p.has_flag70) result = EntPushFixnumPair(result, 70, (long)p.flag70);
   if (p.has_angle)  result = EntPushFlonumPair(result, 50, p.angle);
   if (p.has_radius) result = EntPushFlonumPair(result, 40, p.radius);
@@ -1140,6 +1167,13 @@ LVAL subGETVAR()
       return NIL;
     }
 
+    if (EqualInsensitive(name, "CECOLOR")) {
+      char buf[64];
+      if (helperGetCEColor(buf, (int)sizeof(buf)))
+        return cvstring(buf);
+      return NIL;
+    }
+
     xlerror("getvar: unsupported system variable", nm);
     return NIL;
   }
@@ -1229,6 +1263,13 @@ LVAL subSETVAR()
     if (EqualInsensitive(name, "AUPREC")) {
       int v = SetvarIntArg(val, "AUPREC");
       (void)helperSetAUPrec(v);
+      return val;
+    }
+
+    if (EqualInsensitive(name, "CECOLOR")) {
+      if (!stringp(val))
+        xlerror("setvar CECOLOR: value must be a string", val);
+      (void)helperSetCEColor((const char*)getstring(val));
       return val;
     }
 
@@ -1354,11 +1395,19 @@ LVAL fsubCOMMAND(void)
 // ---------------------------------------------------------------------
 // AutoLISP-tolerant PRINC.
 //
-// AutoLISP scripts often end with a bare (princ) to suppress the
-// trailing return value. XLISP's stock princ requires at least one
-// argument, which surfaces as "error: too few arguments". We override
-// it with a wrapper that returns NIL on zero args and otherwise calls
-// xlprint (no escaping, no terpri) - same semantics as XLISP's princ.
+// Three things this needs to do beyond stock XLISP's princ:
+//   1. Tolerate zero args - many scripts end with bare (princ) to
+//      suppress the trailing return value. XLISP's princ would error.
+//   2. Push the formatted value straight to Rhino's command line via
+//      RhinoApp().Print() rather than into the deferred eval-buffer
+//      that gets flushed at end-of-script. Output appears immediately.
+//   3. No auto-appended newlines, so (princ "a") (princ "b") prints
+//      "ab" on a single line - this is the AutoLISP convention.
+//
+// We still honor the optional second argument: if a stream LVAL is
+// passed, write to it through normal XLISP channels (matches the
+// stock CL/XLISP behavior). Only the no-stream form short-circuits to
+// Rhino.
 // ---------------------------------------------------------------------
 LVAL subPRINC(void)
 {
@@ -1366,10 +1415,31 @@ LVAL subPRINC(void)
     return NIL;
 
   LVAL val  = xlgetarg();
-  LVAL fptr = (moreargs() ? xlgetfile(TRUE) : getvalue(s_stdout));
+  LVAL fptr = (moreargs() ? xlgetfile(TRUE) : NIL);
   xllastarg();
 
-  xlprint(fptr, val, FALSE);
+  if (!null(fptr))
+  {
+    /* Caller specified an explicit stream - write there. */
+    xlprint(fptr, val, FALSE);
+    return val;
+  }
+
+  /* No stream: format the value into an unnamed string stream, then
+     hand the captured text to RhinoApp().Print(). This works for
+     every printable type because xlprint already knows how to format
+     strings, numbers, lists, symbols, etc.; we just intercept the
+     output instead of letting it pool in the lisp stdout buffer. */
+  LVAL stream;
+  xlsave1(stream);
+  stream = newustream();
+  xlprint(stream, val, FALSE);
+  LVAL captured = getstroutput(stream);
+  xlpop();
+
+  if (stringp(captured))
+    RhinoAppPrintRaw((const char*)getstring(captured));
+
   return val;
 }
 
@@ -1548,6 +1618,7 @@ void RegisterCustomLispFunctions(void)
   xlsubr("DEFUN",     FSUBR, fsubDEFUN,   0);
   xlsubr("DISTANCE",  SUBR,  subDISTANCE, 0);
   xlsubr("ENTGET",    SUBR,  subENTGET,   0);
+  xlsubr("ENTLAST",   SUBR,  subENTLAST,  0);
   xlsubr("ENTSEL",    SUBR,  subENTSEL,   0);
   xlsubr("FIX",       SUBR,  subFIX,      0);
   xlsubr("GETANGLE",  SUBR,  subGETANGLE, 0);
@@ -1558,6 +1629,7 @@ void RegisterCustomLispFunctions(void)
   xlsubr("GETREAL",   SUBR,  subGETREAL,  0);
   xlsubr("GETSTRING", SUBR,  subGETSTRING,0);
   xlsubr("GETVAR",    SUBR,  subGETVAR,   0);
+  xlsubr("GRAPHSCR",  SUBR,  subGRAPHSCR, 0);
   xlsubr("INTERS",    SUBR,  subINTERS,   0);
   xlsubr("ITOA",      SUBR,  subITOA,     0);
   xlsubr("POW",       SUBR,  subPOW,      0);
@@ -1570,5 +1642,6 @@ void RegisterCustomLispFunctions(void)
   xlsubr("STRCAT",    SUBR,  subSTRCAT,   0);
   xlsubr("STRLEN",    SUBR,  subSTRLEN,   0);
   xlsubr("SUBSTR",    SUBR,  subSUBSTR,   0);
+  xlsubr("TEXTSCR",   SUBR,  subTEXTSCR,  0);
   xlsubr("WHILE",     FSUBR, fsubWHILE,   0);
 }

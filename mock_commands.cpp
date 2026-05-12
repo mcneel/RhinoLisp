@@ -211,3 +211,126 @@ void MockCommands::Line(unsigned int docId, int argc, const char* const* argv)
   }
   doc->Redraw();
 }
+
+// (command "INSERT" name insertion_point xscale yscale rotation)
+//
+// "PAUSE" is honored at the insertion-point and rotation slots: it
+// suspends parsing and prompts the user via CRhinoGetPoint /
+// CRhinoGetAngle, matching what AutoLISP's pause marker normally does
+// inside (command ...). At scale slots we treat PAUSE as "use the
+// running default" since prompting for a typed scale-factor is rare in
+// scripts.
+void MockCommands::Insert(unsigned int docId, int argc, const char* const* argv)
+{
+  char   block_name[256] = "";
+  double pt[3]           = { 0.0, 0.0, 0.0 };
+  double xscale          = 1.0;
+  double yscale          = 1.0;
+  double rotation        = 0.0;
+
+  bool have_name  = false;
+  bool have_point = false;
+
+  enum { SLOT_NAME, SLOT_POINT, SLOT_XSCALE, SLOT_YSCALE, SLOT_ROTATION, SLOT_DONE };
+  int slot = SLOT_NAME;
+
+  for (int i = 0; i < argc && slot != SLOT_DONE; ++i)
+  {
+    const char* tok = argv[i];
+    if (tok[0] == '\0') continue;                  // Enter -> skip
+
+    const bool is_pause = EqIgnoreCase(tok, "PAUSE");
+
+    switch (slot)
+    {
+    case SLOT_NAME:
+      if (!is_pause)
+      {
+        CopyToken(block_name, sizeof(block_name), tok);
+        have_name = true;
+      }
+      slot = SLOT_POINT;
+      break;
+
+    case SLOT_POINT:
+      if (is_pause)
+      {
+        if (helperGETPOINT("Insertion point", 0, 0.0, 0.0, 0.0,
+                           &pt[0], &pt[1], &pt[2]))
+          have_point = true;
+      }
+      else if (sscanf(tok, "%lf,%lf,%lf", &pt[0], &pt[1], &pt[2]) == 3)
+      {
+        have_point = true;
+      }
+      slot = SLOT_XSCALE;
+      break;
+
+    case SLOT_XSCALE:
+    {
+      if (!is_pause)
+      {
+        double v;
+        if (sscanf(tok, "%lf", &v) == 1) xscale = v;
+      }
+      yscale = xscale;   /* AutoCAD: Y defaults to X */
+      slot = SLOT_YSCALE;
+      break;
+    }
+
+    case SLOT_YSCALE:
+    {
+      if (!is_pause)
+      {
+        double v;
+        if (sscanf(tok, "%lf", &v) == 1) yscale = v;
+      }
+      slot = SLOT_ROTATION;
+      break;
+    }
+
+    case SLOT_ROTATION:
+      if (is_pause)
+      {
+        helperGETANGLE("Rotation angle",
+                       have_point ? 1 : 0,
+                       pt[0], pt[1], pt[2],
+                       &rotation);
+      }
+      else
+      {
+        double v;
+        if (sscanf(tok, "%lf", &v) == 1) rotation = v;
+      }
+      slot = SLOT_DONE;
+      break;
+    }
+  }
+
+  if (!have_name || !have_point) return;
+
+  CRhinoDoc* doc = CRhinoDoc::FromRuntimeSerialNumber(docId);
+  if (!doc) return;
+
+  ON_wString wName = block_name;
+  int idef_idx = doc->m_instance_definition_table.FindInstanceDefinition(wName);
+  if (idef_idx < 0) return;
+
+  /* Compose the placement transform: translate * rotate-Z * scale.
+     The order matters - we want to scale the block first (around its
+     own origin), then rotate, then translate to the insertion point. */
+  ON_Xform xfScale = ON_Xform::IdentityTransformation;
+  xfScale[0][0] = xscale;
+  xfScale[1][1] = yscale;
+  xfScale[2][2] = 1.0;
+
+  ON_Xform xfRot;
+  xfRot.Rotation(rotation, ON_3dVector(0.0, 0.0, 1.0), ON_3dPoint(0.0, 0.0, 0.0));
+
+  ON_Xform xfTrans = ON_Xform::TranslationTransformation(pt[0], pt[1], pt[2]);
+
+  ON_Xform xf = xfTrans * xfRot * xfScale;
+
+  doc->m_instance_definition_table.AddInstanceObject(idef_idx, xf);
+  doc->Redraw();
+}

@@ -5,6 +5,10 @@ extern "C" {
 #endif
   void RegisterCustomLispFunctions(void);
   void RhinoAppPrint(const char* msg);
+  /* Like RhinoAppPrint but does NOT auto-append a trailing newline.
+     Used by subPRINC so (princ "a") (princ "b") prints "ab" on one
+     line, matching AutoLISP semantics. */
+  void RhinoAppPrintRaw(const char* msg);
   void SetRunningScriptDocument(unsigned int docId);
   void RhinoAppRunScript(const char* command, int argc, const char* const* argv);
 
@@ -44,6 +48,14 @@ extern "C" {
   int helperGetAUPrec(int* out_value);
   int helperSetAUPrec(int value);
 
+  int helperGetCEColor(char* out, int out_cap);
+  int helperSetCEColor(const char* value);
+
+  /* Returns the runtime serial number of the most-recently-added
+     object in the active document. Result is 0 (and the function
+     returns 0) when the doc is empty. */
+  int helperEntLast(unsigned int* out_serial);
+
   int helperGETANGLE(const char* prompt,
                      int has_base, double bx, double by, double bz,
                      double* angle);
@@ -80,6 +92,10 @@ extern "C" {
 
     int  has_flag70;
     int  flag70;           /* misc flags; bit 1 = closed polyline */
+
+    /* INSERT-specific scale factors (group codes 41, 42, 43). */
+    int  has_scale;
+    double scale[3];
   } RhinoEntityProps;
 
   int helperENTSEL(const char* prompt,
