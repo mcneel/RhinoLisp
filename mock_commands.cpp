@@ -84,8 +84,7 @@ void MockCommands::Layer(unsigned int docId, int argc, const char* const* argv)
     {
       if (++i >= argc) break;
       CopyToken(color, sizeof(color), argv[i]);
-      // AutoCAD then asks WHICH layer to color; eat the next
-      // non-empty token as that target.
+      // WHICH layer to color; eat the next non-empty token as that target.
       if (i + 1 < argc && argv[i + 1][0] != '\0')
       {
         ++i;
@@ -103,10 +102,10 @@ void MockCommands::Layer(unsigned int docId, int argc, const char* const* argv)
              EqIgnoreCase(tok, "L")   || EqIgnoreCase(tok, "U")   ||
              EqIgnoreCase(tok, "P")   || EqIgnoreCase(tok, "?"))
     {
-      /* Subcommands we don't implement - skip the next arg. */
+      // Subcommands we don't implement - skip the next arg.
       if (++i >= argc) break;
     }
-    /* anything else: ignore (AutoCAD would re-prompt) */
+    // anything else: ignore (AutoCAD would re-prompt)
   }
 
   const bool makeActive = true;
@@ -167,9 +166,9 @@ void MockCommands::Line(unsigned int docId, int argc, const char* const* argv)
   {
     const char* tok = argv[i];
 
-    /* A point token always contains commas (we encode them that way
-       in fsubCOMMAND), so a quick char check avoids confusing
-       "0,0,0" with the close keyword "C". */
+    // A point token always contains commas (we encode them that way
+    //        in fsubCOMMAND), so a quick char check avoids confusing
+    //        "0,0,0" with the close keyword "C".
     if (strchr(tok, ',') != nullptr)
     {
       double x, y, z;
@@ -182,13 +181,13 @@ void MockCommands::Line(unsigned int docId, int argc, const char* const* argv)
       }
     }
 
-    if (tok[0] == '\0') break;  /* Enter -> stop */
+    if (tok[0] == '\0') break;  // Enter -> stop
     if (EqIgnoreCase(tok, "C") || EqIgnoreCase(tok, "CLOSE"))
     {
       closed = 1;
       break;
     }
-    /* unknown subcommand: ignore */
+    // unknown subcommand: ignore
   }
 
   CRhinoDoc* doc = CRhinoDoc::FromRuntimeSerialNumber(docId);
@@ -273,7 +272,7 @@ void MockCommands::Insert(unsigned int docId, int argc, const char* const* argv)
         double v;
         if (sscanf(tok, "%lf", &v) == 1) xscale = v;
       }
-      yscale = xscale;   /* AutoCAD: Y defaults to X */
+      yscale = xscale;   // AutoCAD: Y defaults to X
       slot = SLOT_YSCALE;
       break;
     }
@@ -316,9 +315,9 @@ void MockCommands::Insert(unsigned int docId, int argc, const char* const* argv)
   int idef_idx = doc->m_instance_definition_table.FindInstanceDefinition(wName);
   if (idef_idx < 0) return;
 
-  /* Compose the placement transform: translate * rotate-Z * scale.
-     The order matters - we want to scale the block first (around its
-     own origin), then rotate, then translate to the insertion point. */
+  // Compose the placement transform: translate * rotate-Z * scale.
+  //      The order matters - we want to scale the block first (around its
+  //      own origin), then rotate, then translate to the insertion point.
   ON_Xform xfScale = ON_Xform::IdentityTransformation;
   xfScale[0][0] = xscale;
   xfScale[1][1] = yscale;

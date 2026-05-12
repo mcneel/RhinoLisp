@@ -76,7 +76,7 @@ extern "C" {
     char handle[40];       /* object UUID, formatted as a hex string */
 
     int  has_color;
-    int  color_idx;        /* AutoCAD color index; 256 = BYLAYER */
+    int  color_idx;        /* Color index; 256 = BYLAYER */
 
     int  has_pt10;
     double pt10[3];        /* primary point: start / center / insertion */

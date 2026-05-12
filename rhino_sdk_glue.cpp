@@ -123,11 +123,11 @@ extern "C" void RhinoAppRunScript(const char* command, int argc, const char* con
     return;
   }
 
-  /* Generic fallback: stringify back into a typed-input script and let
-     Rhino's command parser handle it. Spaces between args serve as
-     Enter; an empty arg contributes nothing of its own but its leading
-     space still hits Rhino as an Enter, which matches AutoLISP's
-     empty-string-as-Enter idiom. */
+  // Generic fallback: stringify back into a typed-input script and let
+  //      Rhino's command parser handle it. Spaces between args serve as
+  //      Enter; an empty arg contributes nothing of its own but its leading
+  //      space still hits Rhino as an Enter, which matches AutoLISP's
+  //      empty-string-as-Enter idiom.
   ON_wString script = command;
   for (int i = 0; i < argc; ++i)
   {
@@ -164,41 +164,51 @@ extern "C" void helperALERT(const char* msg)
   RhinoMessageBox(alert.Array(), L"Alert", MB_OK | MB_ICONINFORMATION);
 }
 
+// Input-helper return code convention:
+//    1  - success, output params filled
+//    0  - non-cancel failure (e.g. user picked nothing); caller maps
+//         to NIL, the AutoLISP "no value" convention
+//   -1  - user pressed Esc; caller maps to xlfail("Function
+//         cancelled") so the script unwinds the way AutoLISP scripts
+//         expect on Esc. Loop patterns like getline that retry on
+//         NIL won't get stuck.
 extern "C" int helperGETREAL(const char* prompt, double* value)
 {
   if (nullptr == value)
-    return FALSE;
+    return 0;
   *value = 0.0;
   CRhinoGetNumber gn;
   FlushPrintBuffer(&gn, prompt);
 
-  if (gn.GetNumber() != CRhinoGet::number)
-    return FALSE;
+  CRhinoGet::result rc = gn.GetNumber();
+  if (rc == CRhinoGet::cancel) return -1;
+  if (rc != CRhinoGet::number) return 0;
 
   *value = gn.Number();
-  return TRUE;
+  return 1;
 }
 
 extern "C" int helperGETINT(const char* prompt, int* value)
 {
   if (nullptr == value)
-    return FALSE;
+    return 0;
   *value = 0;
 
   CRhinoGetInteger gi;
   FlushPrintBuffer(&gi, prompt);
 
-  if (gi.GetInteger() != CRhinoGet::number)
-    return FALSE;
+  CRhinoGet::result rc = gi.GetInteger();
+  if (rc == CRhinoGet::cancel) return -1;
+  if (rc != CRhinoGet::number) return 0;
 
   *value = gi.Number();
-  return TRUE;
+  return 1;
 }
 
 extern "C" int helperGETDIST(const char* prompt, int has_base, double bx, double by, double bz, double* distance)
 {
   if (nullptr == distance)
-    return FALSE;
+    return 0;
 
   CRhinoGetDistance gd;
   FlushPrintBuffer(&gd, prompt);
@@ -212,22 +222,23 @@ extern "C" int helperGETDIST(const char* prompt, int has_base, double bx, double
   }
 
   gd.GetDistance();
-  if (gd.CommandResult() != CRhinoCommand::success)
-    return FALSE;
+  CRhinoCommand::result rc = gd.CommandResult();
+  if (rc == CRhinoCommand::cancel) return -1;
+  if (rc != CRhinoCommand::success) return 0;
 
   *distance = gd.Distance();
-  return TRUE;
+  return 1;
 }
 
 // Prompt the user to pick a point. If has_base is non-zero, draws a
-// rubber-band line from (bx,by,bz). Writes the picked point to the
-// out parameters and returns 1 on success, 0 on cancel/escape.
+// rubber-band line from (bx,by,bz). See the tri-state return convention
+// above (1 success / 0 nothing / -1 Esc).
 extern "C" int helperGETPOINT(const char* prompt,
   int has_base, double bx, double by, double bz,
   double* out_x, double* out_y, double* out_z)
 {
   if (nullptr == out_x || nullptr == out_y || nullptr == out_z)
-    return FALSE;
+    return 0;
 
   *out_x = 0.0;
   *out_y = 0.0;
@@ -244,8 +255,9 @@ extern "C" int helperGETPOINT(const char* prompt,
     gp.DrawLineFromPoint(base, TRUE);
   }
 
-  if (gp.GetPoint() != CRhinoGet::point)
-    return 0;
+  CRhinoGet::result rc = gp.GetPoint();
+  if (rc == CRhinoGet::cancel) return -1;
+  if (rc != CRhinoGet::point) return 0;
 
   ON_3dPoint pt = gp.Point();
   *out_x = pt.x;
@@ -315,8 +327,8 @@ extern "C" int rhino_glue_setvar_clayer(const char* name)
 //     echo-mode-suppressed overload of RhinoApp().RunScript() in
 //     Rhino 6+ SDKs.
 // ---------------------------------------------------------------------
-static int g_osmode  = 0;   /* AutoCAD default: no running snaps */
-static int g_cmdecho = 1;   /* AutoCAD default: echo commands */
+static int g_osmode  = 0;   // AutoCAD default: no running snaps
+static int g_cmdecho = 1;   // AutoCAD default: echo commands
 
 extern "C" int helperGetOSnapMode(int* out_value)
 {
@@ -353,16 +365,15 @@ extern "C" int helperSetEcho(int value)
 // that AutoLISP scripts use pervasively.
 //
 // SNAPANG and VIEWTWIST are angle quantities in radians, so they're
-// doubles. AUPREC defaults to 4 (matching the AutoCAD default precision
-// for angle formatting in ANGTOS). AUNITS defaults to 0 (decimal
-// degrees).
+// doubles. AUPREC defaults to 4 (matching the default precision for
+// angle formatting in ANGTOS). AUNITS defaults to 0 (decimal degrees).
 // ---------------------------------------------------------------------
-static int    g_osnapcoord = 1;     /* 0=use osnaps, 1=use typed coords */
-static int    g_orthomode  = 0;     /* 0=ortho off, 1=on               */
-static double g_snapang    = 0.0;   /* snap rotation, radians          */
-static double g_viewtwist  = 0.0;   /* view twist, radians (read-ish)  */
-static int    g_aunits     = 0;     /* 0=decimal deg, 1=DMS, 2=grad...  */
-static int    g_auprec     = 4;     /* angle precision (digits)         */
+static int    g_osnapcoord = 1;     // 0=use osnaps, 1=use typed coords
+static int    g_orthomode  = 0;     // 0=ortho off, 1=on
+static double g_snapang    = 0.0;   // snap rotation, radians
+static double g_viewtwist  = 0.0;   // view twist, radians (read-ish)
+static int    g_aunits     = 0;     // 0=decimal deg, 1=DMS, 2=grad...
+static int    g_auprec     = 4;     // angle precision (digits)
 
 extern "C" int helperGetOSnapCoord(int* out_value) {
   if (!out_value) return 0;
@@ -424,9 +435,8 @@ extern "C" int helperSetAUPrec(int value) {
   return 1;
 }
 
-// CECOLOR - current-entity color, AutoCAD-style. Shadowed: scripts can
-// save/restore it but it doesn't actually drive Rhino's new-object
-// color attribute today. Default is the AutoCAD convention "BYLAYER".
+// CECOLOR - current-entity color. Shadowed: scripts can save/restore it but it
+// doesn't actually drive Rhino's new-object color attribute today.
 static char g_cecolor[64] = "BYLAYER";
 
 extern "C" int helperGetCEColor(char* out, int out_cap)
@@ -485,7 +495,7 @@ extern "C" int helperGETANGLE(const char* prompt,
                               int has_base, double bx, double by, double bz,
                               double* angle)
 {
-  if (nullptr == angle) return FALSE;
+  if (nullptr == angle) return 0;
   *angle = 0.0;
 
   FlushPrintBuffer(nullptr);
@@ -501,11 +511,12 @@ extern "C" int helperGETANGLE(const char* prompt,
     ga.SetBase(ON_3dPoint(bx, by, bz));
   }
 
-  if (ga.GetAngle() != CRhinoGet::angle)
-    return FALSE;
+  CRhinoGet::result rc = ga.GetAngle();
+  if (rc == CRhinoGet::cancel) return -1;
+  if (rc != CRhinoGet::angle)  return 0;
 
   *angle = ga.Angle();
-  return TRUE;
+  return 1;
 }
 
 extern "C" int helperIntersectLineLine(double* points, int bounded, double* outX, double* outY, double* outZ)
@@ -532,26 +543,27 @@ extern "C" int helperIntersectLineLine(double* points, int bounded, double* outX
 extern "C" int helperGETSTRING(const char* prompt, int allow_spaces, char* out, int out_cap)
 {
   if (!out || out_cap <= 0)
-    return FALSE;
+    return 0;
   out[0] = '\0';
 
   CRhinoGetString gs;
   FlushPrintBuffer(&gs, prompt);
-
+  gs.AcceptNothing(TRUE);
   if (allow_spaces)
     gs.GetLiteralString();
   else
     gs.GetString();
 
-  if (gs.CommandResult() != CRhinoCommand::success)
-    return FALSE;
+  CRhinoCommand::result rc = gs.CommandResult();
+  if (rc == CRhinoCommand::cancel)  return -1;
+  if (rc != CRhinoCommand::success) return 0;
 
   ON_String aResult = gs.String();
   int n = aResult.Length();
   if (n >= out_cap) n = out_cap - 1;
   if (n > 0) memcpy(out, aResult.Array(), n);
   out[n] = '\0';
-  return TRUE;
+  return 1;
 }
 
 // ---------------------------------------------------------------------
@@ -675,9 +687,9 @@ static void fill_geometry_props(const ON_Geometry* geom, RhinoEntityProps* out)
     out->scale[1]  = sy;
     out->scale[2]  = sz;
 
-    /* Rotation about Z: angle of the (normalized) x-axis column in
-       the XY plane. AutoLISP convention is radians in [0, 2*pi),
-       same as for the existing ARC group-50. */
+    // Rotation about Z: angle of the (normalized) x-axis column in
+    //        the XY plane. AutoLISP convention is radians in [0, 2*pi),
+    //        same as for the existing ARC group-50.
     double ax = (sx != 0.0) ? xf[0][0] / sx : xf[0][0];
     double ay = (sx != 0.0) ? xf[1][0] / sx : xf[1][0];
     double rot = atan2(ay, ax);
@@ -695,33 +707,38 @@ static void fill_geometry_props(const ON_Geometry* geom, RhinoEntityProps* out)
   CopyToString(out->type, sizeof(out->type), "ENTITY");
 }
 
+// Return codes:
+//    1  - object was picked
+//    0  - no selection (rare; caller picked empty space with "accept
+//         nothing" allowed)
+//   -1  - user cancelled (Esc). Caller should turn this into an XLISP
+//         error so the script's surrounding control flow can unwind,
+//         matching AutoLISP's "Function cancelled" semantics.
 extern "C" int helperENTSEL(const char* prompt,
                             unsigned int* out_sn,
                             double* out_px, double* out_py, double* out_pz)
 {
   if (!out_sn || !out_px || !out_py || !out_pz)
-    return FALSE;
+    return 0;
   *out_sn = 0;
   *out_px = *out_py = *out_pz = 0.0;
 
   CRhinoGetObject go;
-  if (prompt && *prompt)
-  {
-    ON_wString wPrompt = prompt;
-    wPrompt.TrimLeftAndRight();
-    go.SetCommandPrompt(wPrompt);
-  }
+  FlushPrintBuffer(&go, prompt);
 
   go.EnableSubObjectSelect(FALSE);
   go.EnableDeselectAllBeforePostSelect(FALSE);
 
-  if (go.GetObjects(1, 1) != CRhinoGet::object)
-    return FALSE;
+  CRhinoGet::result rc = go.GetObjects(1, 1);
+  if (rc == CRhinoGet::cancel)
+    return -1;
+  if (rc != CRhinoGet::object)
+    return 0;
 
   const CRhinoObjRef& oref = go.Object(0);
   const CRhinoObject* obj  = oref.Object();
   if (!obj)
-    return FALSE;
+    return 0;
 
   *out_sn = (unsigned int)obj->RuntimeSerialNumber();
 
@@ -732,7 +749,7 @@ extern "C" int helperENTSEL(const char* prompt,
     *out_py = pt.y;
     *out_pz = pt.z;
   }
-  return TRUE;
+  return 1;
 }
 
 extern "C" int helperGETENT(unsigned int sn, RhinoEntityProps* out)

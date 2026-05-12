@@ -225,9 +225,12 @@ CRhinoCommand::result CCommandRhinoLisp::RunCommand(const CRhinoCommandContext& 
   if (out[0] != '\0')
   {
     ON_wString wout = out;
-    RhinoApp().Print(wout.Array());
-    if (wout.Length() == 0 || wout[wout.Length() - 1] != L'\n')
-      RhinoApp().Print(L"\n");
+    if (!wout.EqualOrdinal(L"error: cancelled\n", true))
+    {
+      RhinoApp().Print(wout.Array());
+      if (wout.Length() == 0 || wout[wout.Length() - 1] != L'\n')
+        RhinoApp().Print(L"\n");
+    }
   }
 
   if (rc < 0)
