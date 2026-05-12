@@ -41,8 +41,50 @@ static int ColorIndexFromON_Color(const ON_Color& c)
 
 
 static unsigned int g_running_script_document = 0;
+static ON_wString g_print_buffer;
+
+static void FlushPrintBuffer(CRhinoGet* get=nullptr, const char* prompt=nullptr)
+{
+  if (get)
+  {
+    ON_wString _prompt = prompt;
+    if (_prompt.StartsWith(L"\n"))
+    {
+      _prompt.TrimLeftAndRight();
+      _prompt.TrimRight(L":");
+      if(!_prompt.IsEmpty())
+        get->SetCommandPrompt(_prompt);
+    }
+    else
+    {
+      int index = g_print_buffer.ReverseFind(L"\n");
+      if (index >= 0)
+      {
+        _prompt = g_print_buffer.SubString(index + 1) + _prompt;
+        _prompt.TrimRight();
+        _prompt.TrimRight(L":");
+        if (!_prompt.IsEmpty())
+          get->SetCommandPrompt(_prompt);
+        g_print_buffer = g_print_buffer.SubString(0, index);
+      }
+    }
+  }
+
+  if (g_print_buffer.StartsWith(L"\n"))
+    g_print_buffer = g_print_buffer.SubString(1);
+  g_print_buffer.TrimLeftAndRight();
+
+  if (g_print_buffer.IsNotEmpty())
+  {
+    RhinoApp().Print(g_print_buffer.Array());
+    RhinoApp().Print(L"\n");
+  }
+  g_print_buffer.Empty();
+}
+
 extern "C" void SetRunningScriptDocument(unsigned int docId)
 {
+  FlushPrintBuffer();
   g_running_script_document = docId;
 }
 
@@ -58,29 +100,13 @@ extern "C" void SetRunningScriptDocument(unsigned int docId)
 // SDK calls. Everything else gets concatenated into a typed-input
 // script and handed to RhinoApp().RunScript().
 // ---------------------------------------------------------------------
-namespace
-{
-  bool EqIgnoreCase(const char* a, const char* b)
-  {
-    if (!a || !b) return false;
-    while (*a && *b)
-    {
-      char ca = *a, cb = *b;
-      if (ca >= 'a' && ca <= 'z') ca = (char)(ca - 32);
-      if (cb >= 'a' && cb <= 'z') cb = (char)(cb - 32);
-      if (ca != cb) return false;
-      ++a; ++b;
-    }
-    return *a == 0 && *b == 0;
-  }
-} // namespace
-
 extern "C" void RhinoAppRunScript(const char* command, int argc, const char* const* argv)
 {
   ON_String cmd = command;
   if (cmd.IsEmpty())
     return;
 
+  FlushPrintBuffer();
   if (cmd.EqualOrdinal("LAYER", true))
   {
     MockCommands::Layer(g_running_script_document, argc, argv);
@@ -114,6 +140,7 @@ extern "C" void RhinoAppRunScript(const char* command, int argc, const char* con
 
 extern "C" void RhinoAppPrint(const char* msg)
 {
+  FlushPrintBuffer();
   ON_wString s = msg;
   RhinoApp().Print(s.Array());
 
@@ -125,13 +152,13 @@ extern "C" void RhinoAppPrint(const char* msg)
 extern "C" void RhinoAppPrintRaw(const char* msg)
 {
   ON_wString s = msg;
-  if (s.IsEmpty())
-    return;
-  RhinoApp().Print(s.Array());
+  if (s.IsNotEmpty())
+    g_print_buffer.Append(s.Array(), s.Length());
 }
 
 extern "C" void helperALERT(const char* msg)
 {
+  FlushPrintBuffer();
   ON_wString alert = msg;
   alert.TrimLeftAndRight();
   RhinoMessageBox(alert.Array(), L"Alert", MB_OK | MB_ICONINFORMATION);
@@ -142,14 +169,8 @@ extern "C" int helperGETREAL(const char* prompt, double* value)
   if (nullptr == value)
     return FALSE;
   *value = 0.0;
-
   CRhinoGetNumber gn;
-  if (prompt && *prompt)
-  {
-    ON_wString wPrompt = prompt;
-    wPrompt.TrimLeftAndRight();
-    gn.SetCommandPrompt(wPrompt);
-  }
+  FlushPrintBuffer(&gn, prompt);
 
   if (gn.GetNumber() != CRhinoGet::number)
     return FALSE;
@@ -165,12 +186,7 @@ extern "C" int helperGETINT(const char* prompt, int* value)
   *value = 0;
 
   CRhinoGetInteger gi;
-  if (prompt && *prompt)
-  {
-    ON_wString wPrompt = prompt;
-    wPrompt.TrimLeftAndRight();
-    gi.SetCommandPrompt(wPrompt);
-  }
+  FlushPrintBuffer(&gi, prompt);
 
   if (gi.GetInteger() != CRhinoGet::number)
     return FALSE;
@@ -185,12 +201,7 @@ extern "C" int helperGETDIST(const char* prompt, int has_base, double bx, double
     return FALSE;
 
   CRhinoGetDistance gd;
-  if (prompt && *prompt)
-  {
-    ON_wString wPrompt = prompt;
-    wPrompt.TrimLeftAndRight();
-    gd.SetCommandPrompt(wPrompt);
-  }
+  FlushPrintBuffer(&gd, prompt);
 
   if (has_base)
   {
@@ -223,12 +234,7 @@ extern "C" int helperGETPOINT(const char* prompt,
   *out_z = 0.0;
 
   CRhinoGetPoint gp;
-  if (prompt && *prompt)
-  {
-    ON_wString wPrompt = prompt;
-    wPrompt.TrimLeftAndRight();
-    gp.SetCommandPrompt(wPrompt);
-  }
+  FlushPrintBuffer(&gp, prompt);
 
   if (has_base)
   {
@@ -482,6 +488,7 @@ extern "C" int helperGETANGLE(const char* prompt,
   if (nullptr == angle) return FALSE;
   *angle = 0.0;
 
+  FlushPrintBuffer(nullptr);
   CRhinoGetAngle ga;
   if (prompt && *prompt)
   {
@@ -529,12 +536,7 @@ extern "C" int helperGETSTRING(const char* prompt, int allow_spaces, char* out, 
   out[0] = '\0';
 
   CRhinoGetString gs;
-  ON_wString commandPrompt = prompt;
-  commandPrompt.TrimLeftAndRight();
-  if (commandPrompt.IsNotEmpty())
-  {
-    gs.SetCommandPrompt(commandPrompt.Array());
-  }
+  FlushPrintBuffer(&gs, prompt);
 
   if (allow_spaces)
     gs.GetLiteralString();

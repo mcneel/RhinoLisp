@@ -1331,18 +1331,34 @@ LVAL fsubCOMMAND(void)
        through as if typed at the prompt, not as variable lookups. A
        stray (command ... C) on the end of a LINE call is meant to be
        the "close" keyword, not a reference to a variable named C.
-       Catch that before xleval blows up on the missing binding. */
-    if (symbolp(form) && !boundp(form))
-    {
-      const char* s = (const char*)getstring(getpname(form));
-      int n;
-      for (n = 0; n < kArgBufSize - 1 && s[n]; ++n) dst[n] = s[n];
-      dst[n] = '\0';
-      argv[argc++] = dst;
-      continue;
-    }
+       Catch that before xleval blows up on the missing binding.
 
-    LVAL v = xleval(form);
+       IMPORTANT: boundp() only inspects the symbol's GLOBAL value
+       cell. Locals introduced by defun's "/" lambda list live in
+       xlenv, not in the global cell, so boundp would falsely report
+       them as unbound and we'd wrongly stringify the *symbol name*
+       ("PL", "P3") instead of evaluating to the point value. Use
+       xlxgetvalue instead - it walks xlenv first, then the global
+       cell, and returns s_unbound only when the symbol has no value
+       in any reachable scope. */
+    LVAL v;
+    if (symbolp(form))
+    {
+      v = xlxgetvalue(form);
+      if (v == s_unbound)
+      {
+        const char* s = (const char*)getstring(getpname(form));
+        int n;
+        for (n = 0; n < kArgBufSize - 1 && s[n]; ++n) dst[n] = s[n];
+        dst[n] = '\0';
+        argv[argc++] = dst;
+        continue;
+      }
+    }
+    else
+    {
+      v = xleval(form);
+    }
 
     if (null(v))
     {
