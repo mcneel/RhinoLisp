@@ -1,5 +1,6 @@
 #include "stdafx.h"
 #include "RhinoLispPlugIn.h"
+#include "mock_commands.h"
 #include <fstream>
 #include <sstream>
 #include <string>
@@ -216,10 +217,25 @@ CRhinoCommand::result CCommandRhinoLisp::RunCommand(const CRhinoCommandContext& 
   char* out = outBuffer.Array();
   out[0] = '\0';
 
+  // Expose the script's directory to MockCommands::Insert so its
+  // missing-block fallback can look for "<blockname>.dwg" next to the
+  // .lsp file. Cleared after the eval so subsequent runs don't pick up
+  // stale paths.
+  {
+    ON_wString scriptDir = filePath;
+    int slash = scriptDir.ReverseFind(L'\\');
+    if (slash < 0) slash = scriptDir.ReverseFind(L'/');
+    if (slash >= 0)
+      scriptDir = scriptDir.Left(slash);
+    MockCommands::SetScriptDirectory(scriptDir.Array());
+  }
+
   // Use the silent loader so the per-form return values from defun /
   // setq / etc. don't get echoed back. Side-effect output (princ, our
   // command/draw calls) still flows through the output buffer.
   int rc = RhinoXlispPlusEval(context.m_rhino_doc_sn, expr, out, kOutCap);
+
+  MockCommands::SetScriptDirectory(L"");
 
   // Forward whatever XLISP printed to the Rhino command line, line by line.
   if (out[0] != '\0')

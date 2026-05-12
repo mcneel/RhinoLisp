@@ -3,6 +3,18 @@
 #include "rhino_subrs.h"
 #include <cstdio>
 #include <cstring>
+#include <io.h>     // _waccess
+
+// Directory of the .lsp file currently being evaluated. Set by
+// cmdRhinoLisp before each script run. MockCommands::Insert consults
+// this when a block name doesn't resolve in the active doc - it looks
+// for a .dwg of the same name in this directory.
+static ON_wString g_script_directory;
+
+void MockCommands::SetScriptDirectory(const wchar_t* dir)
+{
+  g_script_directory = dir ? dir : L"";
+}
 
 static bool EqIgnoreCase(const char* a, const char* b)
 {
@@ -16,6 +28,71 @@ static void CopyToken(char* dst, int cap, const char* src)
   int n = 0;
   if (src) { for (; n < cap - 1 && src[n]; ++n) dst[n] = src[n]; }
   dst[n] = '\0';
+}
+
+// Attempt to import "<block_name>.dwg" from the script's directory as a
+// new instance definition. Uses Rhino's command-line -Insert with the
+// _File option, which is the most-portable cross-SDK way to load a
+// .dwg as a block. _-Insert also drops an instance at the origin as a
+// side effect; we capture the doc's highest runtime serial number
+// before the call and delete whatever's newer afterwards.
+//
+// Returns true if the definition is in the table at function exit.
+static bool TryLoadBlockFromDisk(CRhinoDoc* doc, unsigned int docId,
+                                 const ON_wString& block_name)
+{
+  if (!doc || block_name.IsEmpty()) return false;
+  if (g_script_directory.IsEmpty()) return false;
+
+  // Build "<dir>\<name>.dwg".
+  ON_wString file_path = g_script_directory;
+  if (file_path.Length() > 0)
+  {
+    wchar_t last = file_path[file_path.Length() - 1];
+    if (last != L'\\' && last != L'/')
+      file_path += L"\\";
+  }
+  file_path += block_name;
+  file_path += L".dwg";
+
+  if (_waccess(file_path.Array(), 0) != 0)
+    return false;   // no such file
+
+  // Snapshot the doc's highest runtime serial number so we can find
+  // and delete the spurious instance that -Insert will place at origin.
+  unsigned int sn_before = 0;
+  {
+    CRhinoObjectIterator it(*doc, CRhinoObjectIterator::normal_objects);
+    for (const CRhinoObject* o = it.First(); o; o = it.Next())
+    {
+      unsigned int s = o->RuntimeSerialNumber();
+      if (s > sn_before) sn_before = s;
+    }
+  }
+
+  // Drive Rhino's -Insert via the file path. The trailing tokens accept
+  // defaults at each prompt (0,0,0 / scale 1 / rotation 0).
+  ON_wString cmd;
+  cmd.Format(L"_-Insert _File \"%s\" 0,0,0 1 1 0 ", file_path.Array());
+  RhinoApp().RunScript(docId, cmd.Array(), 1);
+
+  // Delete the placeholder instance(s) introduced above.
+  ON_SimpleArray<const CRhinoObject*> to_delete;
+  {
+    CRhinoObjectIterator it(*doc, CRhinoObjectIterator::normal_objects);
+    for (const CRhinoObject* o = it.First(); o; o = it.Next())
+    {
+      if (o->RuntimeSerialNumber() > sn_before)
+        to_delete.Append(o);
+    }
+  }
+  for (int i = 0; i < to_delete.Count(); ++i)
+  {
+    doc->DeleteObject(CRhinoObjRef(to_delete[i]));
+  }
+
+  // Verify the definition is now resolvable.
+  return doc->m_instance_definition_table.FindInstanceDefinition(block_name) >= 0;
 }
 
 // Map a named color to an ON_Color
@@ -315,7 +392,17 @@ void MockCommands::Insert(unsigned int docId, int argc, const char* const* argv)
   int idef_idx = doc->m_instance_definition_table.FindInstanceDefinition(wName);
   if (idef_idx < 0)
   {
-    return;
+    // Not in the doc's block table - try to load it from a .dwg in the
+    // script's directory (AutoCAD's INSERT does the same as a fallback).
+    if (TryLoadBlockFromDisk(doc, docId, wName))
+      idef_idx = doc->m_instance_definition_table.FindInstanceDefinition(wName);
+
+    if (idef_idx < 0)
+    {
+      RhinoApp().Print(L"INSERT: block '%S' not found in document or script directory.\n",
+                       wName.Array());
+      return;
+    }
   }
 
   // Compose the placement transform: translate * rotate-Z * scale.
