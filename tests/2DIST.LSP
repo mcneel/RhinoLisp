@@ -1,0 +1,11 @@
+(defun c:2dist ()
+	(if (and 	(setq p1 (getpoint "\nFirst point: "))
+						(setq p2 (getpoint "\nSecond point: "))
+			)
+		(command ".dist" 
+			(list (car p1) (cadr p1))
+			(list (car p2) (cadr p2))
+		)
+	)
+	(princ)
+)

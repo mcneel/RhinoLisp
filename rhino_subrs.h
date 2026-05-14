@@ -51,6 +51,9 @@ extern "C" {
   int helperGetCEColor(char* out, int out_cap);
   int helperSetCEColor(const char* value);
 
+  int helperGetBlipMode(int* out_value);
+  int helperSetBlipMode(int value);
+
   /* Returns the runtime serial number of the most-recently-added
      object in the active document. Result is 0 (and the function
      returns 0) when the doc is empty. */

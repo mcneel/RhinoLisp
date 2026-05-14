@@ -196,11 +196,26 @@ CRhinoCommand::result CCommandRhinoLisp::RunCommand(const CRhinoCommandContext& 
   ON_ClassArray<ON_String> commands;
   content = PreprocessAutoLisp(content, commands);
 
-  if (commands.Count() == 1)
+  if (commands.Count() > 0)
   {
+    ON_String command = commands[0];
+    if (commands.Count() > 1)
+    {
+      CRhinoGetOption go;
+      go.SetCommandPrompt(L"Command to run");
+      for (int i = 0; i < commands.Count(); i++)
+      {
+        ON_wString cmd = commands[i];
+        go.AddCommandOption(CRhinoCommandOptionName(cmd, cmd));
+      }
+      if (go.GetOption() != CRhinoGet::option)
+        return go.CommandResult();
+
+      command = commands[go.OptionIndex()];
+    }
+
     content.push_back('\n');
     content.push_back('(');
-    ON_String command = commands[0];
     content.append(command.Array());
     content.push_back(')');
     content.push_back('\n');

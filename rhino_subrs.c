@@ -1328,6 +1328,13 @@ LVAL subGETVAR()
       return NIL;
     }
 
+    if (EqualInsensitive(name, "BLIPMODE")) {
+      int v = 0;
+      if (helperGetBlipMode(&v))
+        return cvfixnum((FIXTYPE)v);
+      return NIL;
+    }
+
     xlerror("getvar: unsupported system variable", nm);
     return NIL;
   }
@@ -1427,6 +1434,12 @@ LVAL subSETVAR()
       return val;
     }
 
+    if (EqualInsensitive(name, "BLIPMODE")) {
+      int v = SetvarIntArg(val, "BLIPMODE");
+      (void)helperSetBlipMode(v);
+      return val;
+    }
+
     xlerror("setvar: unsupported system variable", nm);
     return NIL;
   }
@@ -1452,6 +1465,13 @@ LVAL subSETVAR()
 // NIL / other -> skipped
 // ---------------------------------------------------------------------
 
+// Pline-session entry points exposed by mock_commands.cpp. When a
+// session is in progress, fsubCOMMAND accepts non-string first args
+// (each subsequent (command pt) is a continuation point).
+extern int  MockCommands_IsPlineSessionActive(void);
+extern void MockCommands_PlineContinue(unsigned int docId, int argc, const char* const* argv);
+extern unsigned int RhinoLispRunningDocument(void);
+
 LVAL fsubCOMMAND(void)
 {
   if (xlargc < 1)
@@ -1460,21 +1480,31 @@ LVAL fsubCOMMAND(void)
     return NIL;
   }
 
-  // Evaluate the command name. Must be a string.
-  LVAL cmd_val = xleval(xlargv[0]);
-  if (!stringp(cmd_val))
-    xlerror("command: first argument must evaluate to a string", xlargv[0]);
-  const char* cmd = (const char*)getstring(cmd_val);
-
-  // Build a flat argv from the remaining args. Sized for typical
-  //      AutoLISP COMMAND usage (rarely more than ~20 args, ~50 bytes each
-  //      since point strings dominate).
+  // Build a flat argv from the args. Sized for typical AutoLISP
+  // COMMAND usage (rarely more than ~20 args, ~50 bytes each since
+  // point strings dominate).
   enum { kMaxArgs = 64, kArgBufSize = 256 };
   static char arg_buf[kMaxArgs][kArgBufSize];
   const char* argv[kMaxArgs];
   int argc = 0;
 
-  for (int i = 1; i < xlargc && argc < kMaxArgs; ++i)
+  // If a pline session is in progress, every arg (including the
+  // first) is content for the polyline, not a new command name.
+  // Walk all xlargv from index 0 and pass straight to MockCommands.
+  int session_active = MockCommands_IsPlineSessionActive();
+  int start_idx      = session_active ? 0 : 1;
+
+  const char* cmd = NULL;
+  if (!session_active)
+  {
+    // Standard path: first arg must evaluate to a string command name.
+    LVAL cmd_val = xleval(xlargv[0]);
+    if (!stringp(cmd_val))
+      xlerror("command: first argument must evaluate to a string", xlargv[0]);
+    cmd = (const char*)getstring(cmd_val);
+  }
+
+  for (int i = start_idx; i < xlargc && argc < kMaxArgs; ++i)
   {
     LVAL form = xlargv[i];
     char* dst = arg_buf[argc];
@@ -1573,6 +1603,13 @@ LVAL fsubCOMMAND(void)
 
     argv[argc] = dst;
     ++argc;
+  }
+
+  if (session_active)
+  {
+    // Continuation of an in-progress pline session.
+    MockCommands_PlineContinue(RhinoLispRunningDocument(), argc, argv);
+    return s_true;
   }
 
   RhinoAppRunScript(cmd, argc, argv);
@@ -1787,6 +1824,60 @@ LVAL fsubWHILE(void)
 }
 
 // ---------------------------------------------------------------------
+// (repeat n body...) - evaluate body n times, return last body value.
+// XLISP-PLUS has DOTIMES with a bound variable; AutoLISP's REPEAT is
+// the same shape without the variable.
+// ---------------------------------------------------------------------
+LVAL fsubREPEAT(void)
+{
+  if (xlargc < 1) xlfail("REPEAT: missing count form");
+
+  LVAL count_val = xleval(xlargv[0]);
+  if (!fixp(count_val))
+    xlerror("REPEAT: count must be an integer", count_val);
+  long n = (long)getfixnum(count_val);
+
+  LVAL FAR *body_argv = xlargv + 1;
+  int       body_argc = xlargc - 1;
+  LVAL val = NIL;
+
+  for (long i = 0; i < n; ++i)
+  {
+    xlargv = body_argv;
+    xlargc = body_argc;
+    while (moreargs())
+      val = xleval(nextarg());
+
+    if (--xlsample <= 0) {
+      xlsample = SAMPLE;
+      oscheck();
+    }
+  }
+  return val;
+}
+
+// ---------------------------------------------------------------------
+// (initget [bits] [keywords]) - constrain the next getXXX prompt.
+//
+// Real AutoLISP stashes a bit-flag mask + keyword whitelist that the
+// next input prompt consults: 1=disallow NIL, 2=disallow zero,
+// 4=disallow negative, 8=disallow drawing-extents bounds, 16=use 2D,
+// 32=use dashed cursor crosshairs, 64=ignore Z, 128=arbitrary input.
+//
+// We don't apply any constraints today - the input helpers run with
+// their natural Rhino-side validation. Treating initget as a no-op
+// matches the AutoLISP signature (drains args, returns NIL) and lets
+// scripts run; the worst that happens is a script accepting input
+// the original would have re-prompted on, which the caller's own
+// (cond) checks usually catch.
+// ---------------------------------------------------------------------
+LVAL subINITGET(void)
+{
+  while (moreargs()) (void)xlgetarg();
+  return NIL;
+}
+
+// ---------------------------------------------------------------------
 // Registration. Called once from rhino_xlisp_init() in the driver,
 // after xlinit() has built the interpreter image.
 // ---------------------------------------------------------------------
@@ -1818,12 +1909,14 @@ void RegisterCustomLispFunctions(void)
   xlsubr("GETSTRING", SUBR,  subGETSTRING,0);
   xlsubr("GETVAR",    SUBR,  subGETVAR,   0);
   xlsubr("GRAPHSCR",  SUBR,  subGRAPHSCR, 0);
+  xlsubr("INITGET",   SUBR,  subINITGET,  0);
   xlsubr("INTERS",    SUBR,  subINTERS,   0);
   xlsubr("ITOA",      SUBR,  subITOA,     0);
   xlsubr("POW",       SUBR,  subPOW,      0);
   xlsubr("POLAR",     SUBR,  subPOLAR,    0);
   xlsubr("PRINC",     SUBR,  subPRINC,    0);
   xlsubr("PROMPT",    SUBR,  subPROMPT,   0);
+  xlsubr("REPEAT",    FSUBR, fsubREPEAT,  0);
   xlsubr("RTOS",      SUBR,  subRTOS,     0);
   xlsubr("SETVAR",    SUBR,  subSETVAR,   0);
   xlsubr("STRCASE",   SUBR,  subSTRCASE,  0);

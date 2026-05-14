@@ -88,6 +88,14 @@ extern "C" void SetRunningScriptDocument(unsigned int docId)
   g_running_script_document = docId;
 }
 
+// Accessor for the C-side lisp interpreter so fsubCOMMAND can pass
+// the right doc serial when routing into MockCommands during a
+// pline-session continuation.
+extern "C" unsigned int RhinoLispRunningDocument(void)
+{
+  return g_running_script_document;
+}
+
 // ---------------------------------------------------------------------
 // RhinoAppRunScript: dispatch a Rhino command on behalf of (command ...).
 //
@@ -102,6 +110,23 @@ extern "C" void SetRunningScriptDocument(unsigned int docId)
 // ---------------------------------------------------------------------
 extern "C" void RhinoAppRunScript(const char* command, int argc, const char* const* argv)
 {
+  if (!command) return;
+
+  // AutoCAD scripts commonly prefix verbs with "." to force the
+  // English-language command name (regardless of localization). The
+  // dot is meaningful in AutoCAD's parser but not in Rhino's - if we
+  // pass it through, Rhino reports "unknown command: .dist". Strip
+  // any leading dots before dispatch. Underscores and hyphens are
+  // Rhino-meaningful prefixes (English-alias and no-dialog
+  // respectively), so we leave those intact.
+  bool forceEnglish = false;
+  while (*command == '.')
+  {
+    forceEnglish = true;
+    command++;
+  }
+  if (!*command) return;
+
   ON_String cmd = command;
   if (cmd.IsEmpty())
     return;
@@ -137,6 +162,21 @@ extern "C" void RhinoAppRunScript(const char* command, int argc, const char* con
     MockCommands::Trim(g_running_script_document, argc, argv);
     return;
   }
+  if (cmd.EqualOrdinal("DIST", true))
+  {
+    MockCommands::Dist(argc, argv);
+    return;
+  }
+  if (cmd.EqualOrdinal("PLINE", true))
+  {
+    MockCommands::Pline(g_running_script_document, argc, argv, false);
+    return;
+  }
+  if (cmd.EqualOrdinal("3DPOLY", true))
+  {
+    MockCommands::Pline(g_running_script_document, argc, argv, true);
+    return;
+  }
 
   // Generic fallback: stringify back into a typed-input script and let
   //      Rhino's command parser handle it. Spaces between args serve as
@@ -144,6 +184,9 @@ extern "C" void RhinoAppRunScript(const char* command, int argc, const char* con
   //      space still hits Rhino as an Enter, which matches AutoLISP's
   //      empty-string-as-Enter idiom.
   ON_wString script = command;
+  if (forceEnglish && !script.StartsWith(L"_"))
+    script.Insert(0, L"_");
+
   for (int i = 0; i < argc; ++i)
   {
     script += L" ";
@@ -469,6 +512,25 @@ extern "C" int helperSetCEColor(const char* value)
   int n = 0;
   for (; n < (int)sizeof(g_cecolor) - 1 && value[n]; ++n) g_cecolor[n] = value[n];
   g_cecolor[n] = '\0';
+  return 1;
+}
+
+// BLIPMODE - whether picking objects leaves "blips" (small markers).
+// Legacy AutoCAD UX from the pre-OpenGL era. Default off (0). Pure
+// shadow: scripts can save/restore but it doesn't drive any actual
+// Rhino UI state since Rhino has no equivalent feature.
+static int g_blipmode = 0;
+
+extern "C" int helperGetBlipMode(int* out_value)
+{
+  if (!out_value) return 0;
+  *out_value = g_blipmode;
+  return 1;
+}
+
+extern "C" int helperSetBlipMode(int value)
+{
+  g_blipmode = value;
   return 1;
 }
 

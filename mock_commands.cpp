@@ -741,3 +741,169 @@ void MockCommands::Trim(unsigned int docId, int argc, const char* const* argv)
 
   doc->Redraw();
 }
+
+// (command "DIST" p1 p2) - AutoCAD's distance-measure command.
+//
+// AutoCAD's DIST reports distance + per-axis deltas to the command
+// line. Rhino has no exact equivalent (the Distance command is
+// similar but interactive); we just print the same information
+// scripts expect to see.
+void MockCommands::Dist(int argc, const char* const* argv)
+{
+  ON_3dPoint p1(0,0,0), p2(0,0,0);
+  bool have_p1 = false, have_p2 = false;
+
+  for (int i = 0; i < argc; ++i)
+  {
+    const char* tok = argv[i];
+    if (!tok || !*tok) continue;
+
+    double x, y, z;
+    if (sscanf(tok, "%lf,%lf,%lf", &x, &y, &z) != 3) continue;
+
+    if (!have_p1)      { p1.Set(x, y, z); have_p1 = true; }
+    else if (!have_p2) { p2.Set(x, y, z); have_p2 = true; break; }
+  }
+
+  if (!have_p1 || !have_p2) return;
+
+  double dx = p2.x - p1.x;
+  double dy = p2.y - p1.y;
+  double dz = p2.z - p1.z;
+  double d  = p1.DistanceTo(p2);
+
+  ON_wString msg;
+  msg.Format(L"Distance = %g, dx = %g, dy = %g, dz = %g\n",
+             d, dx, dy, dz);
+  RhinoApp().Print(msg.Array());
+}
+
+// Incremental polyline session state.
+//
+// AutoLISP scripts often build polylines a point at a time:
+//     (command "pline" pt1)         ; start session
+//     (command pt2)                 ; add point
+//     (command pt3)                 ; add point
+//     (command "")                  ; Enter -> end session, flush
+// Each (command ...) is a separate fsubCOMMAND call, so we need
+// cross-call state. The polyline only materializes when the session
+// flushes - on empty-string Enter, "Close", or a script-end safety
+// flush.
+namespace
+{
+  struct PlineSession {
+    bool            active;
+    bool            is_3d;
+    bool            closed;
+    ON_3dPointArray pts;
+  };
+  static PlineSession g_pline = { false, false, false, ON_3dPointArray() };
+
+  void FlushPlineSession(unsigned int docId)
+  {
+    if (!g_pline.active) return;
+
+    if (g_pline.pts.Count() >= 2)
+    {
+      CRhinoDoc* doc = CRhinoDoc::FromRuntimeSerialNumber(docId);
+      if (doc)
+      {
+        ON_Polyline pl;
+        for (int i = 0; i < g_pline.pts.Count(); ++i)
+          pl.Append(g_pline.pts[i]);
+        if (g_pline.closed && g_pline.pts.Count() >= 3)
+          pl.Append(g_pline.pts[0]);
+        ON_PolylineCurve pcurve(pl);
+
+        // TODO: fix Rhino 8 source. The following can cause a crash
+        //ON_PolylineCurve pcurve;
+        //for (int i = 0; i < g_pline.pts.Count(); ++i)
+        //  pcurve.m_pline.Append(g_pline.pts[i]);
+        //if (g_pline.closed && g_pline.pts.Count() >= 3)
+        //  pcurve.m_pline.Append(g_pline.pts[0]);
+        doc->AddCurveObject(pcurve);
+        doc->Redraw();
+      }
+    }
+
+    g_pline.active = false;
+    g_pline.is_3d  = false;
+    g_pline.closed = false;
+    g_pline.pts.SetCount(0);
+  }
+}
+
+extern "C" int MockCommands_IsPlineSessionActive(void)
+{
+  return g_pline.active ? 1 : 0;
+}
+
+extern "C" void MockCommands_PlineContinue(unsigned int docId, int argc, const char* const* argv)
+{
+  MockCommands::PlineContinue(docId, argc, argv);
+}
+
+// (command "PLINE" pt ...)  -> opens session, processes initial args
+// (command "3DPOLY" pt ...) -> same, with is_3d=true (no functional
+//                              difference today; both store full 3D
+//                              points)
+void MockCommands::Pline(unsigned int docId, int argc, const char* const* argv, bool is_3d)
+{
+  // If a stale session exists for any reason, flush it first.
+  FlushPlineSession(docId);
+
+  g_pline.active = true;
+  g_pline.is_3d  = is_3d;
+  g_pline.closed = false;
+  g_pline.pts.SetCount(0);
+
+  // Process initial argv exactly like a continuation would.
+  PlineContinue(docId, argc, argv);
+}
+
+// Process arguments against the active session. Handles points,
+// the "Close" keyword, and the empty-string Enter terminator.
+// Other tokens are accepted-and-ignored to tolerate scripts that
+// pass through pline subcommands we don't implement (Width, Arc,
+// Halfwidth, etc.). For arc-mode polylines drawn this way, the
+// resulting geometry will lose the curvature but the script
+// proceeds.
+void MockCommands::PlineContinue(unsigned int docId, int argc, const char* const* argv)
+{
+  if (!g_pline.active) return;
+
+  for (int i = 0; i < argc; ++i)
+  {
+    const char* tok = argv[i];
+    if (!tok) continue;
+
+    if (tok[0] == '\0')
+    {
+      // Enter -> end of session.
+      FlushPlineSession(docId);
+      return;
+    }
+
+    // Point form.
+    if (strchr(tok, ','))
+    {
+      double x, y, z;
+      if (sscanf(tok, "%lf,%lf,%lf", &x, &y, &z) == 3)
+      {
+        g_pline.pts.Append(ON_3dPoint(x, y, z));
+        continue;
+      }
+    }
+
+    // Close keyword - close the polyline and flush.
+    if (EqIgnoreCase(tok, "C") || EqIgnoreCase(tok, "CLOSE"))
+    {
+      g_pline.closed = true;
+      FlushPlineSession(docId);
+      return;
+    }
+
+    // Unknown subcommand - silently ignore (Width, Arc, Halfwidth,
+    // Length, Undo, etc.).
+  }
+}
